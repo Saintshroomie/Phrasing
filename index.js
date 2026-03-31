@@ -20,6 +20,7 @@ const DEFAULT_PHRASING_PROMPT = `[Rewrite the following message. Preserve its me
 
 const defaultSettings = {
     enabled: true,
+    debugMode: false,
 };
 
 // ── State ──────────────────────────────────────────────────────────────────────
@@ -30,7 +31,8 @@ let phrasingActive = false; // true while a Phrasing!-triggered generation is ru
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function debug(...args) {
-    console.log('PHRASING:', ...args);
+    if (!settings.debugMode) return;
+    console.log('PHRASING-DEBUG:', ...args);
 }
 
 function toast(message, type = 'info') {
@@ -50,6 +52,8 @@ function getContext() {
 function getActivePrompt() {
     const context = getContext();
     const chatPrompt = context.chatMetadata?.phrasing?.prompt;
+    const source = chatPrompt ? 'chat metadata' : 'default';
+    debug('getActivePrompt — source:', source);
     return chatPrompt || DEFAULT_PHRASING_PROMPT;
 }
 
@@ -57,9 +61,11 @@ function getActivePrompt() {
  * Assembles the final prompt by replacing {{phrasingSeed}} and resolving ST macros.
  */
 function assemblePrompt(seedText) {
+    debug('assemblePrompt — seed text length:', seedText.length, '| preview:', seedText.substring(0, 80));
     let prompt = getActivePrompt();
     prompt = prompt.replace(/\{\{phrasingSeed\}\}/g, seedText);
     prompt = substituteParams(prompt);
+    debug('assemblePrompt — final prompt length:', prompt.length);
     return prompt;
 }
 
@@ -67,6 +73,7 @@ function assemblePrompt(seedText) {
  * Injects the assembled Phrasing! prompt at depth 0, System role.
  */
 function injectPhrasingPrompt(assembledPrompt) {
+    debug('injectPhrasingPrompt — injecting at depth 0, SYSTEM role, prompt length:', assembledPrompt.length);
     setExtensionPrompt(
         INJECTION_KEY,
         assembledPrompt,
@@ -81,25 +88,34 @@ function injectPhrasingPrompt(assembledPrompt) {
  * Clears the ephemeral Phrasing! injection.
  */
 function clearPhrasingInjection() {
+    debug('clearPhrasingInjection — removing injection');
     setExtensionPrompt(INJECTION_KEY, '', extension_prompt_types.NONE, 0);
 }
 
 // ── Button Visibility ──────────────────────────────────────────────────────────
 
 function hideAllPhrasingButtons() {
-    document.querySelectorAll('.phrasing-trigger').forEach(el => {
+    const buttons = document.querySelectorAll('.phrasing-trigger');
+    debug('hideAllPhrasingButtons — hiding', buttons.length, 'buttons');
+    buttons.forEach(el => {
         el.classList.add('phrasing-hidden');
     });
 }
 
 function showAllPhrasingButtons() {
-    if (!settings.enabled) return;
-    document.querySelectorAll('.phrasing-trigger').forEach(el => {
+    if (!settings.enabled) {
+        debug('showAllPhrasingButtons — skipped, extension disabled');
+        return;
+    }
+    const buttons = document.querySelectorAll('.phrasing-trigger');
+    debug('showAllPhrasingButtons — showing', buttons.length, 'buttons');
+    buttons.forEach(el => {
         el.classList.remove('phrasing-hidden');
     });
 }
 
 function applyEnabledState() {
+    debug('applyEnabledState — enabled:', settings.enabled);
     if (settings.enabled) {
         showAllPhrasingButtons();
     } else {
@@ -115,14 +131,16 @@ function applyEnabledState() {
  * Returns the generated enriched text.
  */
 async function doPrimaryFlow(seedText) {
+    debug('doPrimaryFlow — starting with seed length:', seedText.length, '| preview:', seedText.substring(0, 80));
     const context = getContext();
 
     if (context.isGenerating) {
-        debug('Generation already in progress, aborting primary flow');
+        debug('doPrimaryFlow — ABORTED: generation already in progress');
         return '';
     }
 
     phrasingActive = true;
+    debug('doPrimaryFlow — phrasingActive set to true');
 
     // 1. Assemble and inject the prompt BEFORE sending the message
     //    so it's ready when the swipe generation fires.
@@ -130,33 +148,39 @@ async function doPrimaryFlow(seedText) {
     injectPhrasingPrompt(assembled);
 
     // 2. Post the raw seed text as a real user message (becomes swipe 0).
+    debug('doPrimaryFlow — posting seed text via /send');
     await context.executeSlashCommandsWithOptions(`/send ${seedText}`);
 
     // 3. Brief wait for the message to be fully added to the chat array and rendered.
+    debug('doPrimaryFlow — waiting 300ms for message render');
     await new Promise(resolve => setTimeout(resolve, 300));
 
     // 4. Trigger a swipe-right on the last message to generate swipe 1.
     const lastMessageIndex = context.chat.length - 1;
+    debug('doPrimaryFlow — targeting message index:', lastMessageIndex);
     const messageEl = document.querySelector(`#chat .mes[mesid="${lastMessageIndex}"]`);
     if (messageEl) {
         const swipeRight = messageEl.querySelector('.swipe_right');
         if (swipeRight) {
+            debug('doPrimaryFlow — clicking swipe_right to generate swipe 1');
             swipeRight.click();
         } else {
-            debug('Could not find swipe_right button');
+            debug('doPrimaryFlow — FAILED: swipe_right button not found on message', lastMessageIndex);
             clearPhrasingInjection();
             phrasingActive = false;
             return '';
         }
     } else {
-        debug('Could not find last message element');
+        debug('doPrimaryFlow — FAILED: message element not found for index', lastMessageIndex);
         clearPhrasingInjection();
         phrasingActive = false;
         return '';
     }
 
     // 5. Wait for generation to complete.
+    debug('doPrimaryFlow — waiting for generation to complete');
     const result = await waitForGenerationEnd();
+    debug('doPrimaryFlow — generation complete, result length:', result.length);
     return result;
 }
 
@@ -166,33 +190,40 @@ async function doPrimaryFlow(seedText) {
  * Returns the generated enriched text.
  */
 async function doSwipeMode(messageIndex) {
+    debug('doSwipeMode — starting for message index:', messageIndex);
     const context = getContext();
 
     if (context.isGenerating) {
-        debug('Generation already in progress, aborting swipe mode');
+        debug('doSwipeMode — ABORTED: generation already in progress');
         return '';
     }
 
     const message = context.chat[messageIndex];
     if (!message) {
-        debug('No message at index', messageIndex);
+        debug('doSwipeMode — ABORTED: no message at index', messageIndex);
         return '';
     }
 
     // Read the currently displayed swipe content as seed text.
     const seedText = message.mes;
     if (!seedText || !seedText.trim()) {
+        debug('doSwipeMode — ABORTED: message is empty');
         toast('Cannot rephrase an empty message.', 'warning');
         return '';
     }
 
+    debug('doSwipeMode — seed text length:', seedText.length, '| is_user:', message.is_user, '| swipe_id:', message.swipe_id);
     phrasingActive = true;
+    debug('doSwipeMode — phrasingActive set to true');
 
     // Ensure swipe array exists.
     if (!message.swipes || message.swipes.length === 0) {
+        debug('doSwipeMode — initializing swipes array for message');
         message.swipes = [message.mes];
         message.swipe_id = 0;
         message.swipe_info = [{}];
+    } else {
+        debug('doSwipeMode — existing swipes count:', message.swipes.length, '| current swipe_id:', message.swipe_id);
     }
 
     // Assemble and inject the prompt.
@@ -204,22 +235,25 @@ async function doSwipeMode(messageIndex) {
     if (messageEl) {
         const swipeRight = messageEl.querySelector('.swipe_right');
         if (swipeRight) {
+            debug('doSwipeMode — clicking swipe_right to generate new swipe');
             swipeRight.click();
         } else {
-            debug('Could not find swipe_right button');
+            debug('doSwipeMode — FAILED: swipe_right button not found on message', messageIndex);
             clearPhrasingInjection();
             phrasingActive = false;
             return '';
         }
     } else {
-        debug('Could not find message element');
+        debug('doSwipeMode — FAILED: message element not found for index', messageIndex);
         clearPhrasingInjection();
         phrasingActive = false;
         return '';
     }
 
     // Wait for generation to complete.
+    debug('doSwipeMode — waiting for generation to complete');
     const result = await waitForGenerationEnd();
+    debug('doSwipeMode — generation complete, result length:', result.length);
     return result;
 }
 
@@ -228,16 +262,19 @@ async function doSwipeMode(messageIndex) {
  * Resolves with the last message's text (the generated swipe content).
  */
 function waitForGenerationEnd() {
+    debug('waitForGenerationEnd — subscribing to GENERATION_ENDED/GENERATION_STOPPED');
     return new Promise(resolve => {
         const context = getContext();
         const { eventSource, eventTypes } = context;
 
         const onEnd = () => {
+            debug('waitForGenerationEnd — generation ended event received');
             eventSource.removeListener(eventTypes.GENERATION_ENDED, onEnd);
             eventSource.removeListener(eventTypes.GENERATION_STOPPED, onEnd);
             // Return the content of the currently active swipe of the last message.
             const ctx = getContext();
             const lastMsg = ctx.chat[ctx.chat.length - 1];
+            debug('waitForGenerationEnd — last message length:', lastMsg ? lastMsg.mes.length : 0, '| swipe_id:', lastMsg?.swipe_id);
             resolve(lastMsg ? lastMsg.mes : '');
         };
 
@@ -255,15 +292,23 @@ function waitForGenerationEnd() {
  * If input is empty, falls back to Impersonate.
  */
 async function onInputPhrasingClick() {
-    if (!settings.enabled) return;
+    debug('onInputPhrasingClick — triggered');
+    if (!settings.enabled) {
+        debug('onInputPhrasingClick — ABORTED: extension disabled');
+        return;
+    }
 
     const context = getContext();
-    if (context.isGenerating) return;
+    if (context.isGenerating) {
+        debug('onInputPhrasingClick — ABORTED: generation in progress');
+        return;
+    }
 
     const textarea = document.getElementById('send_textarea');
     const seedText = textarea?.value?.trim();
 
     if (!seedText) {
+        debug('onInputPhrasingClick — no input text, falling back to impersonate');
         // Empty input → Impersonate fallback
         const impersonateBtn = document.getElementById('option_impersonate');
         if (impersonateBtn) {
@@ -272,6 +317,7 @@ async function onInputPhrasingClick() {
         return;
     }
 
+    debug('onInputPhrasingClick — seed text captured, length:', seedText.length);
     // Clear the input field.
     textarea.value = '';
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
@@ -283,14 +329,22 @@ async function onInputPhrasingClick() {
  * Handler for the message action button.
  */
 async function onMessagePhrasingClick(messageIndex) {
-    if (!settings.enabled) return;
+    debug('onMessagePhrasingClick — triggered for message index:', messageIndex);
+    if (!settings.enabled) {
+        debug('onMessagePhrasingClick — ABORTED: extension disabled');
+        return;
+    }
 
     const context = getContext();
-    if (context.isGenerating) return;
+    if (context.isGenerating) {
+        debug('onMessagePhrasingClick — ABORTED: generation in progress');
+        return;
+    }
 
     // Only allow on the last message.
     const lastIndex = context.chat.length - 1;
     if (messageIndex !== lastIndex) {
+        debug('onMessagePhrasingClick — ABORTED: message', messageIndex, 'is not the last message (last:', lastIndex, ')');
         toast('Phrasing! can only be used on the last message.', 'warning');
         return;
     }
@@ -305,22 +359,37 @@ async function onMessagePhrasingClick(messageIndex) {
  * Removes it from all other messages.
  */
 function updateMessageActionButtons() {
-    if (!settings.enabled) return;
+    debug('updateMessageActionButtons — called');
+    if (!settings.enabled) {
+        debug('updateMessageActionButtons — skipped, extension disabled');
+        return;
+    }
 
     const context = getContext();
     const lastIndex = context.chat.length - 1;
 
     // Remove existing phrasing buttons from all messages.
-    document.querySelectorAll('.phrasing_mes_button').forEach(el => el.remove());
+    const existingButtons = document.querySelectorAll('.phrasing_mes_button');
+    debug('updateMessageActionButtons — removing', existingButtons.length, 'existing buttons, targeting last index:', lastIndex);
+    existingButtons.forEach(el => el.remove());
 
-    if (lastIndex < 0) return;
+    if (lastIndex < 0) {
+        debug('updateMessageActionButtons — no messages in chat');
+        return;
+    }
 
     const lastMessageEl = document.querySelector(`#chat .mes[mesid="${lastIndex}"]`);
-    if (!lastMessageEl) return;
+    if (!lastMessageEl) {
+        debug('updateMessageActionButtons — last message element not found in DOM');
+        return;
+    }
 
     // Find the extra mes buttons area (where swipe buttons and other actions live).
     const extraButtons = lastMessageEl.querySelector('.extraMesButtons, .mes_buttons');
-    if (!extraButtons) return;
+    if (!extraButtons) {
+        debug('updateMessageActionButtons — extraMesButtons/mes_buttons container not found');
+        return;
+    }
 
     const btn = document.createElement('div');
     btn.classList.add('phrasing_mes_button', 'phrasing-trigger', 'mes_button', 'fa-solid', 'fa-pen-fancy', 'interactable');
@@ -337,6 +406,7 @@ function updateMessageActionButtons() {
     }
 
     extraButtons.appendChild(btn);
+    debug('updateMessageActionButtons — button added to message', lastIndex, '| hidden:', context.isGenerating);
 }
 
 // ── Settings Management ────────────────────────────────────────────────────────
@@ -347,12 +417,14 @@ function loadSettings() {
     if (saved) {
         settings = { ...defaultSettings, ...saved };
     }
+    debug('loadSettings — loaded:', JSON.stringify(settings));
 }
 
 function saveSettings() {
     const context = getContext();
     context.extensionSettings.phrasing = { ...settings };
     context.saveSettings();
+    debug('saveSettings — saved:', JSON.stringify(settings));
 }
 
 function loadPromptTextarea() {
@@ -363,16 +435,19 @@ function loadPromptTextarea() {
 
 function onEnabledChange(event) {
     settings.enabled = event.target.checked;
+    debug('onEnabledChange — enabled:', settings.enabled);
     saveSettings();
     applyEnabledState();
     updateMessageActionButtons();
 }
 
 function onSaveToChat() {
+    debug('onSaveToChat — triggered');
     const textarea = document.getElementById('phrasing_prompt_textarea');
     if (!textarea) return;
 
     const promptText = textarea.value.trim();
+    debug('onSaveToChat — prompt length:', promptText.length, '| has {{phrasingSeed}}:', promptText.includes('{{phrasingSeed}}'));
     const context = getContext();
 
     // Validate: warn if {{phrasingSeed}} is missing.
@@ -397,7 +472,9 @@ function onSaveToChat() {
 }
 
 function onRestoreDefault() {
+    debug('onRestoreDefault — triggered');
     if (!confirm('Restore the default Phrasing! prompt? This will overwrite your current prompt.')) {
+        debug('onRestoreDefault — user cancelled');
         return;
     }
 
@@ -419,32 +496,39 @@ function onRestoreDefault() {
 // ── Event Handlers ─────────────────────────────────────────────────────────────
 
 function onGenerationStarted() {
+    debug('event: GENERATION_STARTED — hiding buttons');
     hideAllPhrasingButtons();
 }
 
 function onGenerationEnded() {
+    debug('event: GENERATION_ENDED — phrasingActive:', phrasingActive);
     if (phrasingActive) {
         clearPhrasingInjection();
         phrasingActive = false;
+        debug('event: GENERATION_ENDED — phrasingActive reset to false');
     }
     showAllPhrasingButtons();
 }
 
 function onGenerationStopped() {
+    debug('event: GENERATION_STOPPED — phrasingActive:', phrasingActive);
     if (phrasingActive) {
         clearPhrasingInjection();
         phrasingActive = false;
+        debug('event: GENERATION_STOPPED — phrasingActive reset to false');
     }
     showAllPhrasingButtons();
 }
 
 function onChatChanged() {
+    debug('event: CHAT_CHANGED');
     loadPromptTextarea();
     // Defer to allow DOM to update.
     setTimeout(() => updateMessageActionButtons(), 100);
 }
 
 function onMessageRendered() {
+    debug('event: MESSAGE_RENDERED');
     // Defer slightly to allow DOM to settle.
     setTimeout(() => updateMessageActionButtons(), 50);
 }
@@ -452,10 +536,16 @@ function onMessageRendered() {
 // ── UI Creation ────────────────────────────────────────────────────────────────
 
 function createInputAreaButton() {
-    if (document.getElementById('phrasing_send_button')) return;
+    if (document.getElementById('phrasing_send_button')) {
+        debug('createInputAreaButton — already exists, skipping');
+        return;
+    }
 
     const sendForm = document.getElementById('rightSendForm');
-    if (!sendForm) return;
+    if (!sendForm) {
+        debug('createInputAreaButton — rightSendForm not found');
+        return;
+    }
 
     const btn = document.createElement('div');
     btn.id = 'phrasing_send_button';
@@ -464,13 +554,20 @@ function createInputAreaButton() {
     btn.addEventListener('click', onInputPhrasingClick);
 
     sendForm.appendChild(btn);
+    debug('createInputAreaButton — button created in rightSendForm');
 }
 
 function createHamburgerMenuItem() {
-    if (document.getElementById('phrasing_menu_button')) return;
+    if (document.getElementById('phrasing_menu_button')) {
+        debug('createHamburgerMenuItem — already exists, skipping');
+        return;
+    }
 
     const impersonateBtn = document.getElementById('option_impersonate');
-    if (!impersonateBtn) return;
+    if (!impersonateBtn) {
+        debug('createHamburgerMenuItem — option_impersonate not found');
+        return;
+    }
 
     const btn = document.createElement('div');
     btn.id = 'phrasing_menu_button';
@@ -479,6 +576,7 @@ function createHamburgerMenuItem() {
     btn.addEventListener('click', onInputPhrasingClick);
 
     impersonateBtn.parentNode.insertBefore(btn, impersonateBtn.nextSibling);
+    debug('createHamburgerMenuItem — menu item created after option_impersonate');
 }
 
 // ── Slash Command ──────────────────────────────────────────────────────────────
@@ -487,7 +585,9 @@ function registerSlashCommand() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'phrasing',
         callback: async (_namedArgs, unnamedArgs) => {
+            debug('slashCommand /phrasing — invoked, args:', unnamedArgs);
             if (!settings.enabled) {
+                debug('slashCommand /phrasing — ABORTED: extension disabled');
                 return '';
             }
 
@@ -495,15 +595,18 @@ function registerSlashCommand() {
 
             if (seedText) {
                 // With argument → Primary Flow.
+                debug('slashCommand /phrasing — using Primary Flow with seed length:', seedText.length);
                 return await doPrimaryFlow(seedText);
             } else {
                 // Without argument → Swipe-Mode on last message.
                 const context = getContext();
                 const lastIndex = context.chat.length - 1;
                 if (lastIndex < 0) {
+                    debug('slashCommand /phrasing — ABORTED: no messages in chat');
                     toast('No messages to rephrase.', 'warning');
                     return '';
                 }
+                debug('slashCommand /phrasing — using Swipe-Mode on message index:', lastIndex);
                 return await doSwipeMode(lastIndex);
             }
         },
@@ -528,6 +631,7 @@ jQuery(async () => {
     // Load and inject the settings panel HTML.
     const settingsContainer = document.getElementById('extensions_settings');
     if (settingsContainer) {
+        debug('init — injecting settings panel HTML');
         const settingsHtml = await renderExtensionTemplateAsync(`third-party/${EXTENSION_NAME}`, 'settings', {});
         settingsContainer.insertAdjacentHTML('beforeend', settingsHtml);
 
@@ -538,8 +642,21 @@ jQuery(async () => {
             enabledCheckbox.addEventListener('change', onEnabledChange);
         }
 
+        const debugCheckbox = document.getElementById('phrasing_debug_mode');
+        if (debugCheckbox) {
+            debugCheckbox.checked = settings.debugMode;
+            debugCheckbox.addEventListener('change', (event) => {
+                settings.debugMode = event.target.checked;
+                saveSettings();
+                // Log unconditionally so the user sees the toggle take effect.
+                console.log('PHRASING-DEBUG:', 'debugMode toggled to', settings.debugMode);
+            });
+        }
+
         document.getElementById('phrasing_save_to_chat')?.addEventListener('click', onSaveToChat);
         document.getElementById('phrasing_restore_default')?.addEventListener('click', onRestoreDefault);
+    } else {
+        debug('init — extensions_settings container not found');
     }
 
     // Create trigger buttons.
@@ -547,6 +664,7 @@ jQuery(async () => {
     createHamburgerMenuItem();
 
     // Subscribe to events.
+    debug('init — subscribing to ST events');
     const context = getContext();
     const { eventSource, eventTypes } = context;
 
@@ -571,10 +689,11 @@ jQuery(async () => {
 
     // Register slash command.
     registerSlashCommand();
+    debug('init — slash command /phrasing registered');
 
     // Apply initial state.
     applyEnabledState();
     loadPromptTextarea();
 
-    debug('Extension loaded');
+    debug('init — Extension loaded, settings:', JSON.stringify(settings));
 });
