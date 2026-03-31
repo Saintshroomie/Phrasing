@@ -51,6 +51,40 @@
     display: none !important;
 }
 
+/* === User Message Swipe Controls === */
+.phrasing-user-swipes {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 4px;
+    opacity: 0.7;
+    transition: opacity 0.15s ease;
+}
+
+.phrasing-user-swipes:hover {
+    opacity: 1;
+}
+
+.phrasing-user-swipe-btn {
+    cursor: pointer;
+    font-size: 0.85em;
+    padding: 2px 5px;
+    border-radius: 3px;
+    transition: color 0.15s ease;
+}
+
+.phrasing-user-swipe-btn:hover {
+    color: var(--SmartThemeQuoteColor, #e8a23a);
+}
+
+.phrasing-user-swipe-counter {
+    font-size: 0.8em;
+    min-width: 2.5em;
+    text-align: center;
+    color: var(--SmartThemeBodyColor, inherit);
+    opacity: 0.8;
+}
+
 /* === Settings Panel === */
 #phrasing_settings .phrasing_prompt_section {
     margin-top: 8px;
