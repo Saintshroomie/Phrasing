@@ -1,13 +1,13 @@
-import { renderExtensionTemplateAsync } from '../../extensions.js';
-import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
-import { SlashCommand } from '../../slash-commands/SlashCommand.js';
-import { ARGUMENT_TYPE, SlashCommandArgument } from '../../slash-commands/SlashCommandArgument.js';
+import { renderExtensionTemplateAsync } from '../../../extensions.js';
+import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
+import { SlashCommand } from '../../../slash-commands/SlashCommand.js';
+import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/SlashCommandArgument.js';
 import {
     setExtensionPrompt,
     extension_prompt_types,
     extension_prompt_roles,
     substituteParams,
-} from '../../../script.js';
+} from '../../../../script.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
