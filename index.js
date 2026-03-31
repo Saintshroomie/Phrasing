@@ -3,17 +3,14 @@ import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.j
 import { SlashCommand } from '../../../slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/SlashCommandArgument.js';
 import {
-    setExtensionPrompt,
-    extension_prompt_types,
-    extension_prompt_roles,
+    generateRaw,
     substituteParams,
 } from '../../../../script.js';
+import { removeReasoningFromString } from '../../../reasoning.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
 const EXTENSION_NAME = 'Phrasing';
-const INJECTION_KEY = 'phrasing_instruction';
-
 const DEFAULT_PHRASING_PROMPT = `[Rewrite the following message. Preserve its meaning, intent, and any dialogue, but enrich it with narration, action, and detail consistent with the character and the current scene. Do not continue the scene beyond what the original message describes.
 
 {{phrasingSeed}}]`;
@@ -70,26 +67,57 @@ function assemblePrompt(seedText) {
 }
 
 /**
- * Injects the assembled Phrasing! prompt at depth 0, System role.
+ * Programmatically adds a new swipe to a message, switches to it, re-renders, and saves.
  */
-function injectPhrasingPrompt(assembledPrompt) {
-    debug('injectPhrasingPrompt — injecting at depth 0, SYSTEM role, prompt length:', assembledPrompt.length);
-    setExtensionPrompt(
-        INJECTION_KEY,
-        assembledPrompt,
-        extension_prompt_types.IN_CHAT,
-        0,
-        false,
-        extension_prompt_roles.SYSTEM,
-    );
-}
+async function addSwipeToMessage(messageIndex, newText) {
+    const context = getContext();
+    const msg = context.chat[messageIndex];
+    if (!msg) {
+        debug('addSwipeToMessage — no message at index', messageIndex);
+        return;
+    }
 
-/**
- * Clears the ephemeral Phrasing! injection.
- */
-function clearPhrasingInjection() {
-    debug('clearPhrasingInjection — removing injection');
-    setExtensionPrompt(INJECTION_KEY, '', extension_prompt_types.NONE, 0);
+    // Initialize swipes array if needed.
+    if (!msg.swipes) {
+        msg.swipes = [msg.mes];
+        msg.swipe_id = 0;
+        msg.swipe_info = [{}];
+    }
+
+    // Add the enriched text as a new swipe and switch to it.
+    msg.swipes.push(newText);
+    msg.swipe_info.push({});
+    msg.swipe_id = msg.swipes.length - 1;
+    msg.mes = newText;
+
+    debug('addSwipeToMessage — added swipe', msg.swipe_id, 'to message', messageIndex);
+
+    // Re-render the message in the DOM.
+    const messageEl = document.querySelector(`#chat .mes[mesid="${messageIndex}"]`);
+    if (messageEl) {
+        const textEl = messageEl.querySelector('.mes_text');
+        if (textEl) {
+            if (typeof context.messageFormatting === 'function') {
+                textEl.innerHTML = context.messageFormatting(
+                    msg.mes, msg.name, msg.is_system, msg.is_user, messageIndex,
+                );
+            } else {
+                textEl.textContent = msg.mes;
+            }
+        }
+
+        // Update swipe counter and ensure swipe controls are visible.
+        const swipeCounter = messageEl.querySelector('.swipes-counter');
+        if (swipeCounter) {
+            swipeCounter.textContent = `${msg.swipe_id + 1}/${msg.swipes.length}`;
+        }
+        const swipeRight = messageEl.querySelector('.swipe_right');
+        if (swipeRight) swipeRight.style.display = '';
+        const swipeLeft = messageEl.querySelector('.swipe_left');
+        if (swipeLeft) swipeLeft.style.display = '';
+    }
+
+    await context.saveChat();
 }
 
 // ── Button Visibility ──────────────────────────────────────────────────────────
@@ -126,8 +154,8 @@ function applyEnabledState() {
 // ── Core Flows ─────────────────────────────────────────────────────────────────
 
 /**
- * Primary Flow (§2.1): Posts seed text as a user message, then triggers a
- * guided swipe with the Phrasing! prompt injected.
+ * Primary Flow (§2.1): Posts seed text as a user message, then generates an
+ * enriched version via generateRaw and adds it as a new swipe.
  * Returns the generated enriched text.
  */
 async function doPrimaryFlow(seedText) {
@@ -140,54 +168,53 @@ async function doPrimaryFlow(seedText) {
     }
 
     phrasingActive = true;
+    hideAllPhrasingButtons();
     debug('doPrimaryFlow — phrasingActive set to true');
 
-    // 1. Assemble and inject the prompt BEFORE sending the message
-    //    so it's ready when the swipe generation fires.
-    const assembled = assemblePrompt(seedText);
-    injectPhrasingPrompt(assembled);
+    try {
+        // 1. Post the raw seed text as a real user message (becomes swipe 0).
+        debug('doPrimaryFlow — posting seed text via /send');
+        await context.executeSlashCommandsWithOptions(`/send ${seedText}`);
 
-    // 2. Post the raw seed text as a real user message (becomes swipe 0).
-    debug('doPrimaryFlow — posting seed text via /send');
-    await context.executeSlashCommandsWithOptions(`/send ${seedText}`);
+        // 2. Brief wait for the message to be fully added to the chat array and rendered.
+        debug('doPrimaryFlow — waiting 300ms for message render');
+        await new Promise(resolve => setTimeout(resolve, 300));
 
-    // 3. Brief wait for the message to be fully added to the chat array and rendered.
-    debug('doPrimaryFlow — waiting 300ms for message render');
-    await new Promise(resolve => setTimeout(resolve, 300));
+        // 3. Generate enriched version via generateRaw.
+        const assembled = assemblePrompt(seedText);
+        debug('doPrimaryFlow — calling generateRaw, prompt length:', assembled.length);
+        const raw = await generateRaw({ prompt: assembled });
+        const enriched = removeReasoningFromString(raw);
 
-    // 4. Trigger a swipe-right on the last message to generate swipe 1.
-    const lastMessageIndex = context.chat.length - 1;
-    debug('doPrimaryFlow — targeting message index:', lastMessageIndex);
-    const messageEl = document.querySelector(`#chat .mes[mesid="${lastMessageIndex}"]`);
-    if (messageEl) {
-        const swipeRight = messageEl.querySelector('.swipe_right');
-        if (swipeRight) {
-            debug('doPrimaryFlow — clicking swipe_right to generate swipe 1');
-            swipeRight.click();
-        } else {
-            debug('doPrimaryFlow — FAILED: swipe_right button not found on message', lastMessageIndex);
-            clearPhrasingInjection();
-            phrasingActive = false;
+        if (!enriched?.trim()) {
+            debug('doPrimaryFlow — generation returned empty result');
+            toast('Phrasing! generation returned empty result.', 'warning');
             return '';
         }
-    } else {
-        debug('doPrimaryFlow — FAILED: message element not found for index', lastMessageIndex);
-        clearPhrasingInjection();
-        phrasingActive = false;
-        return '';
-    }
 
-    // 5. Wait for generation to complete.
-    debug('doPrimaryFlow — waiting for generation to complete');
-    const result = await waitForGenerationEnd();
-    debug('doPrimaryFlow — generation complete, result length:', result.length);
-    return result;
+        debug('doPrimaryFlow — generation complete, enriched length:', enriched.length);
+
+        // 4. Add the enriched text as a new swipe on the user message.
+        const ctx = getContext();
+        const lastIndex = ctx.chat.length - 1;
+        await addSwipeToMessage(lastIndex, enriched);
+
+        return enriched;
+    } catch (err) {
+        console.error('PHRASING: Primary flow failed:', err);
+        toast('Phrasing! generation failed.', 'error');
+        return '';
+    } finally {
+        phrasingActive = false;
+        showAllPhrasingButtons();
+        debug('doPrimaryFlow — phrasingActive reset to false');
+    }
 }
 
 /**
  * Swipe-Mode Flow (§2.3): Reads the currently displayed swipe of an existing
- * message and triggers a guided swipe with the Phrasing! prompt.
- * Returns the generated enriched text.
+ * message and generates an enriched version via generateRaw, adding it as a
+ * new swipe. Returns the generated enriched text.
  */
 async function doSwipeMode(messageIndex) {
     debug('doSwipeMode — starting for message index:', messageIndex);
@@ -214,75 +241,37 @@ async function doSwipeMode(messageIndex) {
 
     debug('doSwipeMode — seed text length:', seedText.length, '| is_user:', message.is_user, '| swipe_id:', message.swipe_id);
     phrasingActive = true;
+    hideAllPhrasingButtons();
     debug('doSwipeMode — phrasingActive set to true');
 
-    // Ensure swipe array exists.
-    if (!message.swipes || message.swipes.length === 0) {
-        debug('doSwipeMode — initializing swipes array for message');
-        message.swipes = [message.mes];
-        message.swipe_id = 0;
-        message.swipe_info = [{}];
-    } else {
-        debug('doSwipeMode — existing swipes count:', message.swipes.length, '| current swipe_id:', message.swipe_id);
-    }
+    try {
+        // Generate enriched version via generateRaw.
+        const assembled = assemblePrompt(seedText);
+        debug('doSwipeMode — calling generateRaw, prompt length:', assembled.length);
+        const raw = await generateRaw({ prompt: assembled });
+        const enriched = removeReasoningFromString(raw);
 
-    // Assemble and inject the prompt.
-    const assembled = assemblePrompt(seedText);
-    injectPhrasingPrompt(assembled);
-
-    // Trigger a swipe-right on the target message.
-    const messageEl = document.querySelector(`#chat .mes[mesid="${messageIndex}"]`);
-    if (messageEl) {
-        const swipeRight = messageEl.querySelector('.swipe_right');
-        if (swipeRight) {
-            debug('doSwipeMode — clicking swipe_right to generate new swipe');
-            swipeRight.click();
-        } else {
-            debug('doSwipeMode — FAILED: swipe_right button not found on message', messageIndex);
-            clearPhrasingInjection();
-            phrasingActive = false;
+        if (!enriched?.trim()) {
+            debug('doSwipeMode — generation returned empty result');
+            toast('Phrasing! generation returned empty result.', 'warning');
             return '';
         }
-    } else {
-        debug('doSwipeMode — FAILED: message element not found for index', messageIndex);
-        clearPhrasingInjection();
-        phrasingActive = false;
+
+        debug('doSwipeMode — generation complete, enriched length:', enriched.length);
+
+        // Add the enriched text as a new swipe on the message.
+        await addSwipeToMessage(messageIndex, enriched);
+
+        return enriched;
+    } catch (err) {
+        console.error('PHRASING: Swipe mode failed:', err);
+        toast('Phrasing! generation failed.', 'error');
         return '';
+    } finally {
+        phrasingActive = false;
+        showAllPhrasingButtons();
+        debug('doSwipeMode — phrasingActive reset to false');
     }
-
-    // Wait for generation to complete.
-    debug('doSwipeMode — waiting for generation to complete');
-    const result = await waitForGenerationEnd();
-    debug('doSwipeMode — generation complete, result length:', result.length);
-    return result;
-}
-
-/**
- * Returns a promise that resolves when the current generation ends.
- * Resolves with the last message's text (the generated swipe content).
- */
-function waitForGenerationEnd() {
-    debug('waitForGenerationEnd — subscribing to GENERATION_ENDED/GENERATION_STOPPED');
-    return new Promise(resolve => {
-        const context = getContext();
-        const { eventSource, eventTypes } = context;
-
-        const onEnd = () => {
-            debug('waitForGenerationEnd — generation ended event received');
-            eventSource.removeListener(eventTypes.GENERATION_ENDED, onEnd);
-            eventSource.removeListener(eventTypes.GENERATION_STOPPED, onEnd);
-            // Return the content of the currently active swipe of the last message.
-            const ctx = getContext();
-            const lastMsg = ctx.chat[ctx.chat.length - 1];
-            debug('waitForGenerationEnd — last message length:', lastMsg ? lastMsg.mes.length : 0, '| swipe_id:', lastMsg?.swipe_id);
-            resolve(lastMsg ? lastMsg.mes : '');
-        };
-
-        eventSource.on(eventTypes.GENERATION_ENDED, onEnd);
-        if (eventTypes.GENERATION_STOPPED) {
-            eventSource.on(eventTypes.GENERATION_STOPPED, onEnd);
-        }
-    });
 }
 
 // ── Button Handlers ────────────────────────────────────────────────────────────
@@ -502,22 +491,17 @@ function onGenerationStarted() {
 
 function onGenerationEnded() {
     debug('event: GENERATION_ENDED — phrasingActive:', phrasingActive);
-    if (phrasingActive) {
-        clearPhrasingInjection();
-        phrasingActive = false;
-        debug('event: GENERATION_ENDED — phrasingActive reset to false');
+    // When phrasingActive, our flow's finally block manages button visibility.
+    if (!phrasingActive) {
+        showAllPhrasingButtons();
     }
-    showAllPhrasingButtons();
 }
 
 function onGenerationStopped() {
     debug('event: GENERATION_STOPPED — phrasingActive:', phrasingActive);
-    if (phrasingActive) {
-        clearPhrasingInjection();
-        phrasingActive = false;
-        debug('event: GENERATION_STOPPED — phrasingActive reset to false');
+    if (!phrasingActive) {
+        showAllPhrasingButtons();
     }
-    showAllPhrasingButtons();
 }
 
 function onChatChanged() {
