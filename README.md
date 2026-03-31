@@ -17,7 +17,7 @@ Type a simple message like *"Yes. I'm ok with that."*, click **Phrasing!**, and 
 ## Installation
 
 1. Open SillyTavern and go to **Extensions** → **Install Extension**
-2. Paste the URL of this repository and click **Install**
+2. Paste `https://github.com/Saintshroomie/Phrasing.git` and click **Install**
 3. The extension will appear in your extensions list as **Phrasing!**
 
 ### Manual Installation
