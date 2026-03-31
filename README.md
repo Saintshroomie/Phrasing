@@ -87,10 +87,6 @@ Phrasing! uses SillyTavern's extension prompt injection system. When triggered:
 
 The full prompt context (character card, lorebook, Author's Note, chat history) is preserved during generation, so the AI's rewrite is informed by the current scene and characters.
 
-## Author
-
-**Chris Phifer**
-
 ## License
 
 This project is provided as-is for use with SillyTavern.
