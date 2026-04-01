@@ -145,7 +145,28 @@ function applyEnabledState() {
     }
 }
 
-// ── Core Flows ─────────────────────────────────────────────────────────────────
+/**
+ * Returns the name of a character that is actually present in the current
+ * chat — needed because ST resolves the generating character from the message's
+ * name field when processing swipes.
+ *
+ * For solo chats this is just context.name2. For group chats we walk back
+ * through the chat history to find the most recent character who spoke,
+ * which is always a valid group member. Falls back to context.name2.
+ */
+function getActiveCharacterName() {
+    const context = getContext();
+    for (let i = context.chat.length - 1; i >= 0; i--) {
+        const msg = context.chat[i];
+        if (!msg.is_user && !msg.is_system && msg.name) {
+            debug('getActiveCharacterName — found:', msg.name, 'at index', i);
+            return msg.name;
+        }
+    }
+    debug('getActiveCharacterName — fallback to context.name2:', context.name2);
+    return context.name2;
+}
+
 
 /**
  * User Input Flow: Posts the user's seed text into the chat as a
@@ -170,8 +191,14 @@ async function doUserInputFlow(rawSeedText) {
     // Build a character-flagged message object so ST renders it with swipe
     // buttons. is_user: false is intentional — user messages don't get swipe
     // controls in ST's DOM, which would prevent successive rephrasing.
+    //
+    // name must be a character that actually exists in the current chat —
+    // ST validates this when processing swipes and will error otherwise.
+    // We pass context.name1 as speakerOverride to doSwipeMode so the
+    // injection still correctly attributes the text to the user.
+    const charName = getActiveCharacterName();
     const message = {
-        name: context.name1,
+        name: charName,
         is_user: false,
         is_system: false,
         send_date: new Date().toISOString(),
@@ -184,7 +211,7 @@ async function doUserInputFlow(rawSeedText) {
 
     context.chat.push(message);
     const messageIndex = context.chat.length - 1;
-    debug('doUserInputFlow — pushed message at index:', messageIndex, '| name:', message.name);
+    debug('doUserInputFlow — pushed message at index:', messageIndex, '| charName:', charName, '| speaker override:', context.name1);
 
     // Render the new message into the DOM and persist.
     await addOneMessage(message, { type: 'append', scroll: true });
@@ -194,15 +221,20 @@ async function doUserInputFlow(rawSeedText) {
     // doSwipeMode queries for them.
     await new Promise(resolve => setTimeout(resolve, 100));
 
-    return await doSwipeMode(messageIndex);
+    return await doSwipeMode(messageIndex, context.name1);
 }
 
 /**
  * Swipe-Mode Flow (§2.3): Reads the currently displayed swipe of an existing
  * message and triggers a guided swipe with the Phrasing! prompt.
  * Returns the generated enriched text.
+ *
+ * @param {number} messageIndex
+ * @param {string|null} speakerOverride - Name to use for injection attribution
+ *   instead of message.name. Used by doUserInputFlow so the injection says
+ *   "UserName: text" even though the message is stored under a character name.
  */
-async function doSwipeMode(messageIndex) {
+async function doSwipeMode(messageIndex, speakerOverride = null) {
     debug('doSwipeMode — starting for message index:', messageIndex);
     const context = getContext();
 
@@ -225,8 +257,8 @@ async function doSwipeMode(messageIndex) {
         return '';
     }
 
-    const seedText = formatSeedWithSpeaker(rawSeedText, message.is_user, message.name);
-    debug('doSwipeMode — seed text length:', seedText.length, '| is_user:', message.is_user, '| swipe_id:', message.swipe_id);
+    const seedText = formatSeedWithSpeaker(rawSeedText, message.is_user, speakerOverride || message.name);
+    debug('doSwipeMode — seed text length:', seedText.length, '| is_user:', message.is_user, '| swipe_id:', message.swipe_id, '| speakerOverride:', speakerOverride);
     phrasingActive = true;
     debug('doSwipeMode — phrasingActive set to true');
 
