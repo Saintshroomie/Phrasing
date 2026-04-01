@@ -126,8 +126,10 @@ function applyEnabledState() {
 // ── Core Flows ─────────────────────────────────────────────────────────────────
 
 /**
- * Primary Flow (§2.1): Posts seed text as a user message, then triggers a
- * guided swipe with the Phrasing! prompt injected.
+ * Primary Flow (§2.1): Injects the Phrasing! prompt containing the user's
+ * seed text, then triggers an Impersonate. The AI generates enriched prose
+ * guided by the injection, and the result lands in #send_textarea for the
+ * user to review and send.
  * Returns the generated enriched text.
  */
 async function doPrimaryFlow(seedText) {
@@ -143,40 +145,30 @@ async function doPrimaryFlow(seedText) {
     debug('doPrimaryFlow — phrasingActive set to true');
 
     try {
-        // 1. Assemble and inject the prompt BEFORE sending the message
-        //    so it's ready when the swipe generation fires.
+        // 1. Assemble and inject the prompt so the AI sees the rewriting
+        //    instruction during the impersonate generation.
         const assembled = assemblePrompt(seedText);
         injectPhrasingPrompt(assembled);
 
-        // 2. Post the raw seed text as a real user message (becomes swipe 0).
-        debug('doPrimaryFlow — posting seed text via /send');
-        await context.executeSlashCommandsWithOptions(`/send ${seedText}`);
-
-        // 3. Brief wait for the message to be fully added to the chat array and rendered.
-        debug('doPrimaryFlow — waiting 300ms for message render');
-        await new Promise(resolve => setTimeout(resolve, 300));
-
-        // 4. Trigger a swipe-right on the last message to generate swipe 1.
-        const lastMessageIndex = context.chat.length - 1;
-        debug('doPrimaryFlow — targeting message index:', lastMessageIndex);
-        const messageEl = document.querySelector(`#chat .mes[mesid="${lastMessageIndex}"]`);
-        if (messageEl) {
-            const swipeRight = messageEl.querySelector('.swipe_right');
-            if (swipeRight) {
-                debug('doPrimaryFlow — clicking swipe_right to generate swipe 1');
-                swipeRight.click();
-            } else {
-                debug('doPrimaryFlow — FAILED: swipe_right button not found on message', lastMessageIndex);
-                return '';
-            }
+        // 2. Trigger an impersonate. The injected prompt guides the AI to
+        //    rewrite the seed text as enriched prose. The result lands in
+        //    #send_textarea for the user to review before sending.
+        debug('doPrimaryFlow — triggering impersonate');
+        const impersonateBtn = document.getElementById('option_impersonate');
+        if (impersonateBtn) {
+            impersonateBtn.click();
         } else {
-            debug('doPrimaryFlow — FAILED: message element not found for index', lastMessageIndex);
+            debug('doPrimaryFlow — FAILED: option_impersonate button not found');
             return '';
         }
 
-        // 5. Wait for generation to complete.
+        // 3. Wait for generation to complete.
         debug('doPrimaryFlow — waiting for generation to complete');
-        const result = await waitForGenerationEnd();
+        await waitForGenerationEnd();
+
+        // 4. Read the result from the textarea.
+        const textarea = document.getElementById('send_textarea');
+        const result = textarea?.value?.trim() || '';
         debug('doPrimaryFlow — generation complete, result length:', result.length);
         return result;
     } finally {
@@ -652,7 +644,7 @@ function registerSlashCommand() {
             }),
         ],
         aliases: [],
-        helpString: 'Enriches a message with AI narration. With text: posts it and generates a rephrased swipe. Without text: rephrases the last message.',
+        helpString: 'Enriches a message with AI narration. With text: generates an enriched impersonate into the input field. Without text: rephrases the last message as a new swipe.',
     }));
 }
 

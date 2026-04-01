@@ -17,18 +17,19 @@ The extension targets users who want richer, more immersive roleplay contributio
 
 ## 2. Core Workflow
 
-### 2.1 Primary Flow (Input Field → New Message)
+### 2.1 Primary Flow (Input Field → Impersonate)
 
 1. User types raw input into the ST chat input field (e.g., *"Yes. I'm ok with that."*).
 2. User clicks the **Phrasing!** button (instead of the normal Send button).
 3. The extension:
    a. Captures and clears the input field text (the **seed text**).
-   b. Posts the raw seed text as a **real user message** to the chat. This becomes the message content and automatically serves as swipe 0.
-   c. Injects the Phrasing! prompt (containing the seed text and rewriting instructions) into the prompt at depth 0, ephemerally.
-   d. Triggers a **guided swipe** on the newly posted message. ST's native swipe generation handles the placeholder ellipsis, streaming display, and swipe array management.
-   e. The generated enriched text lands as **swipe 1**. ST automatically navigates to it.
-   f. After generation completes, the ephemeral injection is removed.
-4. The result is a user message displaying the AI-enriched prose (swipe 1), with the user's raw input preserved as swipe 0. The user can swipe back at any time to see or restore what they originally typed.
+   b. Injects the Phrasing! prompt (containing the seed text and rewriting instructions) into the prompt at depth 0, ephemerally.
+   c. Triggers an **Impersonate** action. The AI generates enriched prose guided by the injected prompt, as if writing from the user's persona.
+   d. The generated enriched text lands in the **input field** (`#send_textarea`) for the user to review, edit, and send.
+   e. After generation completes, the ephemeral injection is removed.
+4. The result is the AI-enriched prose sitting in the input field, ready for the user to review before sending. The user can edit the text, send it as-is, or discard it.
+
+> **Why Impersonate instead of swipes?** SillyTavern does not support swipe generation on user messages — swipes are a character/AI message feature. Impersonate naturally generates text from the user's perspective, and placing the result in the input field gives the user a chance to review before committing.
 
 ### 2.2 Empty Input Fallback
 
@@ -165,7 +166,7 @@ The active Phrasing! prompt is stored in the **chat metadata** so that different
 
 ## 6. Data Flow Diagrams
 
-### 6.1 Primary Flow (Input → New Message)
+### 6.1 Primary Flow (Input → Impersonate)
 
 ```
 User types input ──► Clicks Phrasing! button
@@ -173,20 +174,20 @@ User types input ──► Clicks Phrasing! button
                             ▼
                  ┌─ Capture input text (seed)
                  ├─ Clear input field
-                 ├─ Post raw seed text as real user message (= swipe 0)
                  ├─ Load prompt template (chat metadata → default fallback)
                  ├─ Replace {{phrasingSeed}} with seed text
                  ├─ Resolve ST macros ({{user}}, {{char}}, etc.)
                  ├─ Inject assembled prompt at depth 0, System role
-                 ├─ Trigger guided swipe on the message
+                 ├─ Trigger Impersonate action
                  │       │
                  │       ▼
-                 │   ST native swipe UI: ellipsis → streaming tokens
+                 │   AI generates enriched prose as user persona
+                 │   (guided by injected Phrasing! prompt)
                  │       │
                  │       ▼
-                 ├─ Generation complete (swipe 1 = enriched text)
+                 ├─ Generation complete → enriched text lands in #send_textarea
                  ├─ Remove ephemeral injection
-                 └─ Display: swipe 1 (enriched), swipe left → swipe 0 (raw input)
+                 └─ User reviews, edits, and sends the enriched text
 ```
 
 ### 6.2 Swipe-Mode Flow (Message Action)
@@ -228,7 +229,7 @@ If the user aborts generation mid-stream (e.g., clicks Stop):
 
 If the generation call fails (backend error, timeout, connection loss):
 
-- In Primary Flow: The raw seed text message remains intact as swipe 0 — the user's input is never at risk. The failed swipe is discarded. A toast notification indicates the failure.
+- In Primary Flow: The input field may be empty or contain partial output. The user's original seed text has already been cleared from the input field, but since no message was posted, the chat state is unchanged. A toast notification indicates the failure.
 - In Swipe-Mode: No new swipe is added. A toast notification indicates the failure. The original message is untouched.
 - The ephemeral injection is removed in all cases.
 
@@ -292,7 +293,7 @@ SillyTavern/public/scripts/extensions/third-party/Phrasing/
    ├─ depth: 0
    └─ role: 0 (System)
 
-2. Trigger Swipe generation on the target message
+2. Trigger generation (Impersonate for Primary Flow, Swipe for Swipe-Mode)
 
 3. On generation complete (or abort/error):
    setExtensionPrompt('phrasing_instruction', '', extension_prompt_types.IN_CHAT, 0)
@@ -301,25 +302,9 @@ SillyTavern/public/scripts/extensions/third-party/Phrasing/
 
 ### 8.4 Swipe Array Management
 
-**Primary Flow — new message:**
+**Primary Flow — Impersonate:**
 
-```javascript
-// After posting raw seed text as a real user message:
-const messageIndex = chat.length - 1;
-const message = chat[messageIndex];
-
-// The message was posted normally, so:
-//   message.mes = seedText (swipe 0 = raw user input)
-//   message.swipes = [seedText]  (initialized by sendMessageAsUser)
-//   message.swipe_id = 0
-
-// Now trigger a guided swipe — ST's native swipe generation will:
-//   1. Create swipe 1 with "..." placeholder
-//   2. Set swipe_id = 1
-//   3. Stream generation into swipe 1
-//   4. Handle all display updates
-// The extension only needs to inject the prompt before triggering the swipe.
-```
+The Primary Flow no longer uses swipes. Instead, the seed text is embedded in the injected prompt, and an Impersonate action generates the enriched text directly into `#send_textarea`. No swipe array management is needed for this flow.
 
 **Swipe-Mode — existing message:**
 
@@ -434,10 +419,10 @@ Phrasing! exposes a `/phrasing` STscript command for scripting and automation wo
 |--------|--------|
 | **Extension Name** | Phrasing! |
 | **Purpose** | Enrich user roleplay messages with AI-generated narration, prose, and detail |
-| **Generation Method** | Post raw input as user message → ephemeral prompt injection at depth 0 → guided swipe |
+| **Generation Method** | Primary: ephemeral prompt injection at depth 0 → Impersonate (result in textarea). Swipe-Mode: ephemeral injection → guided swipe on existing message |
 | **Seed Text** | Input field (primary/hamburger buttons) or existing message content (message action button) |
 | **Empty Input** | Falls back to Impersonate |
-| **Swipe Integration** | Raw input preserved as first swipe; enriched text as subsequent swipe(s) |
+| **Swipe Integration** | Primary: enriched text placed in input field for review. Swipe-Mode: enriched text as new swipe on existing message |
 | **Prompt Storage** | Per-chat via chat metadata, with extension-level default fallback |
 | **Trigger Locations** | Input area button, hamburger menu item, message action button (last message only), `/phrasing` slash command |
 | **Backend** | KoboldCPP (Text Completion); inherits current sampler/generation settings |
