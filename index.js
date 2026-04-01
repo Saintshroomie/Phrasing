@@ -144,14 +144,13 @@ function applyEnabledState() {
     }
 }
 
-// ── Core Flows ─────────────────────────────────────────────────────────────────
-
 /**
- * Primary Flow (§2.1): Injects the Phrasing! prompt containing the user's
- * seed text, then triggers an Impersonate. The AI generates enriched prose
- * guided by the injection, and the result lands in #send_textarea for the
- * user to review and send.
- * Returns the generated enriched text.
+ * Primary Flow: Injects the Phrasing! prompt containing the user's seed text,
+ * then triggers an Impersonate. The AI generates enriched prose guided by the
+ * injection, and the result lands in #send_textarea for the user to review
+ * and send.
+ *
+ * @param {string} seedText - Speaker-attributed seed text ("Name: message").
  */
 async function doPrimaryFlow(seedText) {
     debug('doPrimaryFlow — starting with seed length:', seedText.length, '| preview:', seedText.substring(0, 80));
@@ -166,14 +165,9 @@ async function doPrimaryFlow(seedText) {
     debug('doPrimaryFlow — phrasingActive set to true');
 
     try {
-        // 1. Assemble and inject the prompt so the AI sees the rewriting
-        //    instruction during the impersonate generation.
         const assembled = assemblePrompt(seedText);
         injectPhrasingPrompt(assembled);
 
-        // 2. Trigger an impersonate. The injected prompt guides the AI to
-        //    rewrite the seed text as enriched prose. The result lands in
-        //    #send_textarea for the user to review before sending.
         debug('doPrimaryFlow — triggering impersonate');
         const impersonateBtn = document.getElementById('option_impersonate');
         if (impersonateBtn) {
@@ -183,11 +177,9 @@ async function doPrimaryFlow(seedText) {
             return '';
         }
 
-        // 3. Wait for generation to complete.
         debug('doPrimaryFlow — waiting for generation to complete');
         await waitForGenerationEnd();
 
-        // 4. Read the result from the textarea.
         const textarea = document.getElementById('send_textarea');
         const result = textarea?.value?.trim() || '';
         debug('doPrimaryFlow — generation complete, result length:', result.length);
@@ -195,13 +187,14 @@ async function doPrimaryFlow(seedText) {
     } finally {
         clearPhrasingInjection();
         phrasingActive = false;
+        showAllPhrasingButtons();
         debug('doPrimaryFlow — cleanup complete (finally block)');
     }
 }
 
 /**
- * Swipe-Mode Flow (§2.3): Reads the currently displayed swipe of an existing
- * message and triggers a guided swipe with the Phrasing! prompt.
+ * Swipe-Mode Flow: Reads the currently displayed swipe of an existing message
+ * and triggers a guided swipe with the Phrasing! prompt.
  * Returns the generated enriched text.
  */
 async function doSwipeMode(messageIndex) {
@@ -297,6 +290,7 @@ async function doSwipeMode(messageIndex) {
     } finally {
         clearPhrasingInjection();
         phrasingActive = false;
+        showAllPhrasingButtons();
         debug('doSwipeMode — cleanup complete (finally block)');
     }
 }
@@ -657,7 +651,7 @@ function registerSlashCommand() {
             const rawSeedText = unnamedArgs?.trim();
 
             if (rawSeedText) {
-                // With argument → Primary Flow (user-authored text).
+                // With argument → Primary Flow (impersonate into textarea).
                 const seedText = formatSeedWithSpeaker(rawSeedText, true);
                 debug('slashCommand /phrasing — using Primary Flow with seed length:', seedText.length);
                 return await doPrimaryFlow(seedText);
