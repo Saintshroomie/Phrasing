@@ -7,7 +7,6 @@ import {
     extension_prompt_types,
     extension_prompt_roles,
     substituteParams,
-    generateRaw,
 } from '../../../../script.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -27,8 +26,7 @@ const defaultSettings = {
 // ── State ──────────────────────────────────────────────────────────────────────
 
 let settings = { ...defaultSettings };
-let phrasingActive = false; // true while a character-message Phrasing! swipe generation is running
-let phrasingUserActive = false; // true while a user-message Phrasing! generateRaw call is running
+let phrasingActive = false; // true while a Phrasing!-triggered generation is running
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -128,8 +126,8 @@ function applyEnabledState() {
 // ── Core Flows ─────────────────────────────────────────────────────────────────
 
 /**
- * Primary Flow (§2.1): Posts seed text as a user message, then generates a
- * Phrasing! swipe on that user message via generateRaw.
+ * Primary Flow (§2.1): Posts seed text as a user message, then triggers a
+ * guided swipe with the Phrasing! prompt injected.
  * Returns the generated enriched text.
  */
 async function doPrimaryFlow(seedText) {
@@ -140,31 +138,55 @@ async function doPrimaryFlow(seedText) {
         debug('doPrimaryFlow — ABORTED: generation already in progress');
         return '';
     }
-    if (phrasingUserActive) {
-        debug('doPrimaryFlow — ABORTED: user phrasing already in progress');
-        return '';
-    }
 
-    // 1. Post the raw seed text as a real user message (becomes swipe 0).
+    phrasingActive = true;
+    debug('doPrimaryFlow — phrasingActive set to true');
+
+    // 1. Assemble and inject the prompt BEFORE sending the message
+    //    so it's ready when the swipe generation fires.
+    const assembled = assemblePrompt(seedText);
+    injectPhrasingPrompt(assembled);
+
+    // 2. Post the raw seed text as a real user message (becomes swipe 0).
     debug('doPrimaryFlow — posting seed text via /send');
     await context.executeSlashCommandsWithOptions(`/send ${seedText}`);
 
-    // 2. Brief wait for the message to be fully added to the chat array and rendered.
+    // 3. Brief wait for the message to be fully added to the chat array and rendered.
     debug('doPrimaryFlow — waiting 300ms for message render');
     await new Promise(resolve => setTimeout(resolve, 300));
 
-    // 3. Generate the enriched swipe on the (now last) user message.
+    // 4. Trigger a swipe-right on the last message to generate swipe 1.
     const lastMessageIndex = context.chat.length - 1;
-    debug('doPrimaryFlow — generating enriched swipe on message index:', lastMessageIndex);
-    return await doUserMessagePhrasing(lastMessageIndex);
+    debug('doPrimaryFlow — targeting message index:', lastMessageIndex);
+    const messageEl = document.querySelector(`#chat .mes[mesid="${lastMessageIndex}"]`);
+    if (messageEl) {
+        const swipeRight = messageEl.querySelector('.swipe_right');
+        if (swipeRight) {
+            debug('doPrimaryFlow — clicking swipe_right to generate swipe 1');
+            swipeRight.click();
+        } else {
+            debug('doPrimaryFlow — FAILED: swipe_right button not found on message', lastMessageIndex);
+            clearPhrasingInjection();
+            phrasingActive = false;
+            return '';
+        }
+    } else {
+        debug('doPrimaryFlow — FAILED: message element not found for index', lastMessageIndex);
+        clearPhrasingInjection();
+        phrasingActive = false;
+        return '';
+    }
+
+    // 5. Wait for generation to complete.
+    debug('doPrimaryFlow — waiting for generation to complete');
+    const result = await waitForGenerationEnd();
+    debug('doPrimaryFlow — generation complete, result length:', result.length);
+    return result;
 }
 
 /**
  * Swipe-Mode Flow (§2.3): Reads the currently displayed swipe of an existing
- * message and triggers a guided Phrasing! swipe.
- * For user messages, uses generateRaw directly (swipe buttons are not natively
- * present on user messages in ST). For character messages, uses ST's swipe
- * mechanism via the injected prompt.
+ * message and triggers a guided swipe with the Phrasing! prompt.
  * Returns the generated enriched text.
  */
 async function doSwipeMode(messageIndex) {
@@ -182,6 +204,7 @@ async function doSwipeMode(messageIndex) {
         return '';
     }
 
+    // Read the currently displayed swipe content as seed text.
     const seedText = message.mes;
     if (!seedText || !seedText.trim()) {
         debug('doSwipeMode — ABORTED: message is empty');
@@ -189,14 +212,7 @@ async function doSwipeMode(messageIndex) {
         return '';
     }
 
-    // User messages don't have native ST swipe buttons — use the direct generateRaw path.
-    if (message.is_user) {
-        debug('doSwipeMode — user message detected, delegating to doUserMessagePhrasing');
-        return await doUserMessagePhrasing(messageIndex);
-    }
-
-    // Character message path: inject prompt and trigger via swipe_right.
-    debug('doSwipeMode — character message, seed length:', seedText.length, '| swipe_id:', message.swipe_id);
+    debug('doSwipeMode — seed text length:', seedText.length, '| is_user:', message.is_user, '| swipe_id:', message.swipe_id);
     phrasingActive = true;
     debug('doSwipeMode — phrasingActive set to true');
 
@@ -239,189 +255,6 @@ async function doSwipeMode(messageIndex) {
     const result = await waitForGenerationEnd();
     debug('doSwipeMode — generation complete, result length:', result.length);
     return result;
-}
-
-// ── User Message Phrasing ─────────────────────────────────────────────────────
-
-/**
- * Generates a Phrasing! swipe for a user message using generateRaw directly.
- * ST does not render swipe buttons for user messages, so we call the LLM
- * ourselves and manually inject swipe controls into the DOM.
- */
-async function doUserMessagePhrasing(messageIndex) {
-    debug('doUserMessagePhrasing — starting for message index:', messageIndex);
-
-    if (phrasingUserActive) {
-        debug('doUserMessagePhrasing — ABORTED: user phrasing already in progress');
-        return '';
-    }
-
-    const context = getContext();
-    const message = context.chat[messageIndex];
-    if (!message) {
-        debug('doUserMessagePhrasing — ABORTED: no message at index', messageIndex);
-        return '';
-    }
-
-    const seedText = message.mes;
-    if (!seedText?.trim()) {
-        debug('doUserMessagePhrasing — ABORTED: empty message');
-        toast('Cannot rephrase an empty message.', 'warning');
-        return '';
-    }
-
-    phrasingUserActive = true;
-    hideAllPhrasingButtons();
-
-    try {
-        // Initialize swipes array if this is the first swipe.
-        if (!message.swipes || message.swipes.length === 0) {
-            debug('doUserMessagePhrasing — initializing swipes array');
-            message.swipes = [message.mes];
-            message.swipe_id = 0;
-            message.swipe_info = [{}];
-        } else {
-            debug('doUserMessagePhrasing — existing swipes count:', message.swipes.length);
-        }
-
-        const assembled = assemblePrompt(seedText);
-        debug('doUserMessagePhrasing — calling generateRaw, prompt length:', assembled.length);
-
-        const result = await generateRaw({ prompt: assembled });
-        debug('doUserMessagePhrasing — result length:', result ? result.length : 0);
-
-        if (!result?.trim()) {
-            debug('doUserMessagePhrasing — empty result, aborting swipe creation');
-            toast('Phrasing! returned an empty response.', 'warning');
-            return '';
-        }
-
-        // Add the enriched text as a new swipe.
-        message.swipes.push(result.trim());
-        message.swipe_info.push({});
-        message.swipe_id = message.swipes.length - 1;
-        message.mes = result.trim();
-
-        await context.saveChat();
-
-        // Update the message DOM to show the new text and swipe controls.
-        const messageEl = document.querySelector(`#chat .mes[mesid="${messageIndex}"]`);
-        if (messageEl) {
-            updateUserMessageDisplay(messageEl, message, messageIndex);
-            ensureUserSwipeControls(messageEl, message, messageIndex);
-        }
-
-        debug('doUserMessagePhrasing — complete, swipe_id now:', message.swipe_id);
-        return result.trim();
-    } catch (err) {
-        debug('doUserMessagePhrasing — generateRaw threw:', err);
-        toast('Phrasing! generation failed.', 'error');
-        return '';
-    } finally {
-        phrasingUserActive = false;
-        showAllPhrasingButtons();
-    }
-}
-
-/**
- * Updates the visible text of a user message element to reflect message.mes.
- */
-function updateUserMessageDisplay(messageEl, msg, messageIndex) {
-    const mesTextEl = messageEl.querySelector('.mes_text');
-    if (!mesTextEl) return;
-
-    const context = getContext();
-    if (typeof context.messageFormatting === 'function') {
-        mesTextEl.innerHTML = context.messageFormatting(
-            msg.mes, msg.name, msg.is_system, msg.is_user, messageIndex,
-        );
-    } else {
-        mesTextEl.textContent = msg.mes;
-    }
-}
-
-/**
- * Injects (or updates) the Phrasing! swipe navigation controls for a user
- * message. Called after generating a swipe and on chat reload.
- */
-function ensureUserSwipeControls(messageEl, msg, messageIndex) {
-    if (!msg.swipes || msg.swipes.length <= 1) return;
-
-    // Remove stale controls so we rebuild with fresh event listeners.
-    messageEl.querySelector('.phrasing-user-swipes')?.remove();
-
-    const container = document.createElement('div');
-    container.classList.add('phrasing-user-swipes');
-
-    const leftBtn = document.createElement('div');
-    leftBtn.classList.add('phrasing-user-swipe-btn', 'interactable');
-    leftBtn.title = 'Previous version';
-    leftBtn.innerHTML = '<i class="fa-solid fa-chevron-left"></i>';
-    leftBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        navigateUserMessageSwipe(messageIndex, -1);
-    });
-
-    const counter = document.createElement('span');
-    counter.classList.add('phrasing-user-swipe-counter');
-    counter.textContent = `${(msg.swipe_id ?? 0) + 1}/${msg.swipes.length}`;
-
-    const rightBtn = document.createElement('div');
-    rightBtn.classList.add('phrasing-user-swipe-btn', 'interactable');
-    rightBtn.title = 'Next version';
-    rightBtn.innerHTML = '<i class="fa-solid fa-chevron-right"></i>';
-    rightBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        navigateUserMessageSwipe(messageIndex, +1);
-    });
-
-    container.appendChild(leftBtn);
-    container.appendChild(counter);
-    container.appendChild(rightBtn);
-
-    const mesBlock = messageEl.querySelector('.mes_block') || messageEl;
-    mesBlock.appendChild(container);
-    debug('ensureUserSwipeControls — controls added for message', messageIndex, '| swipes:', msg.swipes.length);
-}
-
-/**
- * Navigates a user message's swipe array by direction (-1 or +1).
- */
-async function navigateUserMessageSwipe(messageIndex, direction) {
-    const context = getContext();
-    const msg = context.chat[messageIndex];
-    if (!msg?.swipes) return;
-
-    const newId = Math.max(0, Math.min(msg.swipes.length - 1, (msg.swipe_id ?? 0) + direction));
-    if (newId === msg.swipe_id) return;
-
-    debug('navigateUserMessageSwipe — index:', messageIndex, '| direction:', direction, '| newId:', newId);
-    msg.swipe_id = newId;
-    msg.mes = msg.swipes[newId];
-
-    await context.saveChat();
-
-    const messageEl = document.querySelector(`#chat .mes[mesid="${messageIndex}"]`);
-    if (messageEl) {
-        updateUserMessageDisplay(messageEl, msg, messageIndex);
-        ensureUserSwipeControls(messageEl, msg, messageIndex);
-    }
-}
-
-/**
- * Restores user message swipe controls for any messages that already have
- * multiple swipes (e.g., after a chat load or scroll).
- */
-function restoreUserSwipeControls() {
-    const context = getContext();
-    context.chat.forEach((msg, index) => {
-        if (!msg.is_user || !msg.swipes || msg.swipes.length <= 1) return;
-        const messageEl = document.querySelector(`#chat .mes[mesid="${index}"]`);
-        if (messageEl) {
-            ensureUserSwipeControls(messageEl, msg, index);
-        }
-    });
-    debug('restoreUserSwipeControls — scan complete');
 }
 
 /**
@@ -691,19 +524,13 @@ function onChatChanged() {
     debug('event: CHAT_CHANGED');
     loadPromptTextarea();
     // Defer to allow DOM to update.
-    setTimeout(() => {
-        updateMessageActionButtons();
-        restoreUserSwipeControls();
-    }, 100);
+    setTimeout(() => updateMessageActionButtons(), 100);
 }
 
 function onMessageRendered() {
     debug('event: MESSAGE_RENDERED');
     // Defer slightly to allow DOM to settle.
-    setTimeout(() => {
-        updateMessageActionButtons();
-        restoreUserSwipeControls();
-    }, 50);
+    setTimeout(() => updateMessageActionButtons(), 50);
 }
 
 // ── UI Creation ────────────────────────────────────────────────────────────────
