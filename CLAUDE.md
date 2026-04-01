@@ -663,7 +663,7 @@ Extensions can make LLM calls independently of the main chat generation. Two pri
 Sends a prompt directly to the active LLM API without using the normal chat pipeline. Best for structured/templated prompts where you control the full prompt content.
 
 ```javascript
-import { generateRaw } from '../../../script.js';
+import { generateRaw } from '../../../../script.js';
 
 const result = await generateRaw({
     prompt: sceneText,              // Main prompt text (user-role content)
@@ -687,7 +687,7 @@ const result = await generateRaw({
 Generates through the normal ST pipeline but "quietly" — the result is not added to the chat. Includes character context and system prompt from current settings.
 
 ```javascript
-import { generateQuietPrompt } from '../../../script.js';
+import { generateQuietPrompt } from '../../../../script.js';
 
 const result = await generateQuietPrompt({
     quietPrompt: 'Summarize the following scene...',
@@ -711,7 +711,7 @@ const result = await generateQuietPrompt({
 When using `generateRaw`, the response may include chain-of-thought reasoning tags. Strip them:
 
 ```javascript
-import { removeReasoningFromString } from '../../reasoning.js';
+import { removeReasoningFromString } from '../../../reasoning.js';
 
 const cleanResult = removeReasoningFromString(await generateRaw({ prompt, systemPrompt }));
 ```
@@ -746,7 +746,7 @@ async function runGeneration(prompt) {
 Extensions inject content into the LLM's prompt at generation time using `setExtensionPrompt`. This is the primary mechanism for feeding memory, context, or instructions to the model.
 
 ```javascript
-import { setExtensionPrompt, extension_prompt_types, extension_prompt_roles } from '../../../script.js';
+import { setExtensionPrompt, extension_prompt_types, extension_prompt_roles } from '../../../../script.js';
 
 setExtensionPrompt(
     key,       // Unique string identifier for this injection (e.g., 'sillymem_scenes')
@@ -808,7 +808,7 @@ setExtensionPrompt('sillymem_arc', '', extension_prompt_types.NONE, 0);
 Wrap injected content in labeled blocks so it's clear to the LLM what it is:
 
 ```javascript
-import { substituteParamsExtended } from '../../../script.js';
+import { substituteParamsExtended } from '../../../../script.js';
 
 const template = '[Story So Far:\n{{summary}}\n]';
 const formatted = substituteParamsExtended(template, { summary: sceneSummariesText });
@@ -824,7 +824,7 @@ SillyTavern provides tokenization utilities for estimating prompt sizes. Essenti
 ### Async Token Count (Recommended)
 
 ```javascript
-import { getTokenCountAsync } from '../../tokenizers.js';
+import { getTokenCountAsync } from '../../../tokenizers.js';
 
 // Automatically selects the correct tokenizer for the current API
 const count = await getTokenCountAsync(text, 0);  // text, optional padding
@@ -833,7 +833,7 @@ const count = await getTokenCountAsync(text, 0);  // text, optional padding
 ### Synchronous Token Count
 
 ```javascript
-import { getTextTokens, tokenizers } from '../../tokenizers.js';
+import { getTextTokens, tokenizers } from '../../../tokenizers.js';
 
 // Returns token ID array for a specific tokenizer
 const tokens = getTextTokens(tokenizers.GPT2, text);
@@ -854,7 +854,7 @@ const count = tokens.length;
 ### Context Window Size
 
 ```javascript
-import { getMaxContextSize } from '../../../script.js';
+import { getMaxContextSize } from '../../../../script.js';
 
 const maxTokens = getMaxContextSize();  // Current context window size in tokens
 ```
@@ -882,7 +882,7 @@ Extensions that need to persist data beyond `chatMetadata` and `extensionSetting
 All ST server API calls require authentication headers:
 
 ```javascript
-import { getRequestHeaders } from '../../../script.js';
+import { getRequestHeaders } from '../../../../script.js';
 
 const response = await fetch('/api/endpoint', {
     method: 'POST',
@@ -957,7 +957,7 @@ SillyTavern supports group chats where multiple characters interact. Extensions 
 ### Detecting Group Chat Mode
 
 ```javascript
-import { selected_group, is_group_generating, groups } from '../../group-chats.js';
+import { selected_group, is_group_generating, groups } from '../../../group-chats.js';
 
 if (selected_group) {
     // Currently in a group chat
@@ -983,8 +983,8 @@ if (context.groupId) {
 In group chats, generation cycles through multiple characters. Wait for completion before proceeding:
 
 ```javascript
-import { waitUntilCondition } from '../../utils.js';
-import { is_group_generating } from '../../group-chats.js';
+import { waitUntilCondition } from '../../../utils.js';
+import { is_group_generating } from '../../../group-chats.js';
 
 if (selected_group) {
     await waitUntilCondition(() => is_group_generating === false, 1000, 10);
@@ -1049,7 +1049,7 @@ const char = context.characters[context.characterId];
 ### User Persona Description
 
 ```javascript
-import { power_user } from '../../power-user.js';
+import { power_user } from '../../../power-user.js';
 
 const personaDescription = power_user.persona_description;  // String or empty
 const personaPosition = power_user.persona_description_position;
@@ -1116,7 +1116,7 @@ SillyTavern provides macro substitution for resolving template variables like `{
 ### Standard Macros
 
 ```javascript
-import { substituteParams } from '../../../script.js';
+import { substituteParams } from '../../../../script.js';
 
 const resolved = substituteParams('{{char}} looks at {{user}} and smiles.');
 // → "Alice looks at Bob and smiles." (using current character/user names)
@@ -1127,7 +1127,7 @@ Common built-in macros: `{{char}}`, `{{user}}`, `{{time}}`, `{{date}}`, `{{idle_
 ### Extended Macros with Custom Variables
 
 ```javascript
-import { substituteParamsExtended } from '../../../script.js';
+import { substituteParamsExtended } from '../../../../script.js';
 
 const template = `Summarize scene {{sceneNumber}} for {{char}}.
 Previous scene: {{previousScene}}`;
@@ -1148,10 +1148,10 @@ This is the recommended approach for prompt templates — define templates with 
 The modern pattern for registering slash commands uses `SlashCommandParser` with typed arguments:
 
 ```javascript
-import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
-import { SlashCommand } from '../../slash-commands/SlashCommand.js';
+import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
+import { SlashCommand } from '../../../slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument }
-    from '../../slash-commands/SlashCommandArgument.js';
+    from '../../../slash-commands/SlashCommandArgument.js';
 
 SlashCommandParser.addCommandObject(SlashCommand.fromProps({
     name: 'sm-fact',
@@ -1216,7 +1216,7 @@ For extensions that run multiple sequential LLM calls (e.g., summarize → extra
 ### Pipeline Structure
 
 ```javascript
-import { deactivateSendButtons, activateSendButtons } from '../../../script.js';
+import { deactivateSendButtons, activateSendButtons } from '../../../../script.js';
 
 let pipelineRunning = false;
 
@@ -1307,7 +1307,7 @@ Extensions can create floating panels that persist their position across reloads
 For complex UI, store HTML in separate template files and load them:
 
 ```javascript
-import { renderExtensionTemplateAsync } from '../../extensions.js';
+import { renderExtensionTemplateAsync } from '../../../extensions.js';
 
 // Loads HTML from your extension's directory: extensions/third-party/my-extension/panel.html
 const panelHtml = await renderExtensionTemplateAsync('third-party/my-extension', 'panel', {});
@@ -1317,8 +1317,8 @@ document.body.insertAdjacentHTML('beforeend', panelHtml);
 ### Making Panels Draggable
 
 ```javascript
-import { dragElement } from '../../RossAscends-mods.js';
-import { loadMovingUIState } from '../../power-user.js';
+import { dragElement } from '../../../RossAscends-mods.js';
+import { loadMovingUIState } from '../../../power-user.js';
 
 // After inserting the panel into the DOM:
 const panel = document.getElementById('sm_panel');
