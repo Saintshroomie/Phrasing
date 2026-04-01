@@ -247,49 +247,47 @@ async function doSwipeMode(messageIndex) {
         const assembled = assemblePrompt(seedText);
         injectPhrasingPrompt(assembled);
 
-        // Trigger a swipe-right on the target message.
-        // Re-query the button each time because ST may re-render the message
-        // DOM after each swipe navigation, making cached references stale.
-        const getSwipeRight = () => {
-            const el = document.querySelector(`#chat .mes[mesid="${messageIndex}"] .swipe_right`);
-            return el;
-        };
+        // Jump to the last swipe so a single swipe_right click triggers generation.
+        // swipe_right only generates when already on the last swipe; otherwise it
+        // just navigates. Instead of clicking through each intermediate swipe, we
+        // set the data directly and re-render once.
+        const lastSwipeIndex = message.swipes.length - 1;
+        if (message.swipe_id !== lastSwipeIndex) {
+            debug('doSwipeMode — jumping from swipe', message.swipe_id, 'to last swipe', lastSwipeIndex);
+            message.swipe_id = lastSwipeIndex;
+            message.mes = message.swipes[lastSwipeIndex];
 
-        const initialSwipeRight = getSwipeRight();
-        if (!initialSwipeRight) {
+            // Re-render the message to reflect the new active swipe.
             const messageEl = document.querySelector(`#chat .mes[mesid="${messageIndex}"]`);
-            if (!messageEl) {
-                debug('doSwipeMode — FAILED: message element not found for index', messageIndex);
-            } else {
-                debug('doSwipeMode — FAILED: swipe_right button not found on message', messageIndex);
+            if (messageEl) {
+                const context = getContext();
+                const textEl = messageEl.querySelector('.mes_text');
+                if (textEl) {
+                    if (typeof context.messageFormatting === 'function') {
+                        textEl.innerHTML = context.messageFormatting(
+                            message.mes, message.name, message.is_system, message.is_user, messageIndex,
+                        );
+                    } else {
+                        textEl.textContent = message.mes;
+                    }
+                }
+                // Update swipe counter display.
+                const swipeCounter = messageEl.querySelector('.swipes-counter');
+                if (swipeCounter) {
+                    swipeCounter.textContent = `${message.swipe_id + 1}/${message.swipes.length}`;
+                }
             }
-            return '';
         }
 
-        // If not on the last swipe, navigate forward to it first.
-        // swipe_right only triggers generation when on the last swipe;
-        // otherwise it just navigates to the next existing swipe.
-        const navigateClicks = (message.swipes.length - 1) - message.swipe_id;
-        if (navigateClicks > 0) {
-            debug('doSwipeMode — navigating forward', navigateClicks, 'swipe(s) to reach the last swipe');
-            for (let i = 0; i < navigateClicks; i++) {
-                const navBtn = getSwipeRight();
-                if (!navBtn) {
-                    debug('doSwipeMode — FAILED: swipe_right button lost during navigation at step', i);
-                    return '';
-                }
-                navBtn.click();
-                await new Promise(resolve => setTimeout(resolve, 300));
-            }
+        // Now on the last swipe — one click triggers generation of a new swipe.
+        const swipeRight = document.querySelector(`#chat .mes[mesid="${messageIndex}"] .swipe_right`);
+        if (!swipeRight) {
+            debug('doSwipeMode — FAILED: swipe_right button not found on message', messageIndex);
+            return '';
         }
 
         debug('doSwipeMode — clicking swipe_right to generate new swipe');
-        const genBtn = getSwipeRight();
-        if (!genBtn) {
-            debug('doSwipeMode — FAILED: swipe_right button lost before generation click');
-            return '';
-        }
-        genBtn.click();
+        swipeRight.click();
 
         // Wait for generation to complete.
         debug('doSwipeMode — waiting for generation to complete');
