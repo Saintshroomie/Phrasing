@@ -142,46 +142,48 @@ async function doPrimaryFlow(seedText) {
     phrasingActive = true;
     debug('doPrimaryFlow — phrasingActive set to true');
 
-    // 1. Assemble and inject the prompt BEFORE sending the message
-    //    so it's ready when the swipe generation fires.
-    const assembled = assemblePrompt(seedText);
-    injectPhrasingPrompt(assembled);
+    try {
+        // 1. Assemble and inject the prompt BEFORE sending the message
+        //    so it's ready when the swipe generation fires.
+        const assembled = assemblePrompt(seedText);
+        injectPhrasingPrompt(assembled);
 
-    // 2. Post the raw seed text as a real user message (becomes swipe 0).
-    debug('doPrimaryFlow — posting seed text via /send');
-    await context.executeSlashCommandsWithOptions(`/send ${seedText}`);
+        // 2. Post the raw seed text as a real user message (becomes swipe 0).
+        debug('doPrimaryFlow — posting seed text via /send');
+        await context.executeSlashCommandsWithOptions(`/send ${seedText}`);
 
-    // 3. Brief wait for the message to be fully added to the chat array and rendered.
-    debug('doPrimaryFlow — waiting 300ms for message render');
-    await new Promise(resolve => setTimeout(resolve, 300));
+        // 3. Brief wait for the message to be fully added to the chat array and rendered.
+        debug('doPrimaryFlow — waiting 300ms for message render');
+        await new Promise(resolve => setTimeout(resolve, 300));
 
-    // 4. Trigger a swipe-right on the last message to generate swipe 1.
-    const lastMessageIndex = context.chat.length - 1;
-    debug('doPrimaryFlow — targeting message index:', lastMessageIndex);
-    const messageEl = document.querySelector(`#chat .mes[mesid="${lastMessageIndex}"]`);
-    if (messageEl) {
-        const swipeRight = messageEl.querySelector('.swipe_right');
-        if (swipeRight) {
-            debug('doPrimaryFlow — clicking swipe_right to generate swipe 1');
-            swipeRight.click();
+        // 4. Trigger a swipe-right on the last message to generate swipe 1.
+        const lastMessageIndex = context.chat.length - 1;
+        debug('doPrimaryFlow — targeting message index:', lastMessageIndex);
+        const messageEl = document.querySelector(`#chat .mes[mesid="${lastMessageIndex}"]`);
+        if (messageEl) {
+            const swipeRight = messageEl.querySelector('.swipe_right');
+            if (swipeRight) {
+                debug('doPrimaryFlow — clicking swipe_right to generate swipe 1');
+                swipeRight.click();
+            } else {
+                debug('doPrimaryFlow — FAILED: swipe_right button not found on message', lastMessageIndex);
+                return '';
+            }
         } else {
-            debug('doPrimaryFlow — FAILED: swipe_right button not found on message', lastMessageIndex);
-            clearPhrasingInjection();
-            phrasingActive = false;
+            debug('doPrimaryFlow — FAILED: message element not found for index', lastMessageIndex);
             return '';
         }
-    } else {
-        debug('doPrimaryFlow — FAILED: message element not found for index', lastMessageIndex);
+
+        // 5. Wait for generation to complete.
+        debug('doPrimaryFlow — waiting for generation to complete');
+        const result = await waitForGenerationEnd();
+        debug('doPrimaryFlow — generation complete, result length:', result.length);
+        return result;
+    } finally {
         clearPhrasingInjection();
         phrasingActive = false;
-        return '';
+        debug('doPrimaryFlow — cleanup complete (finally block)');
     }
-
-    // 5. Wait for generation to complete.
-    debug('doPrimaryFlow — waiting for generation to complete');
-    const result = await waitForGenerationEnd();
-    debug('doPrimaryFlow — generation complete, result length:', result.length);
-    return result;
 }
 
 /**
@@ -216,79 +218,99 @@ async function doSwipeMode(messageIndex) {
     phrasingActive = true;
     debug('doSwipeMode — phrasingActive set to true');
 
-    // Ensure swipe array exists.
-    if (!message.swipes || message.swipes.length === 0) {
-        debug('doSwipeMode — initializing swipes array for message');
-        message.swipes = [message.mes];
-        message.swipe_id = 0;
-        message.swipe_info = [{}];
-    } else {
-        debug('doSwipeMode — existing swipes count:', message.swipes.length, '| current swipe_id:', message.swipe_id);
-    }
-
-    // Assemble and inject the prompt.
-    const assembled = assemblePrompt(seedText);
-    injectPhrasingPrompt(assembled);
-
-    // Trigger a swipe-right on the target message.
-    const messageEl = document.querySelector(`#chat .mes[mesid="${messageIndex}"]`);
-    if (messageEl) {
-        const swipeRight = messageEl.querySelector('.swipe_right');
-        if (swipeRight) {
-            // If not on the last swipe, navigate forward to it first.
-            // swipe_right only triggers generation when on the last swipe;
-            // otherwise it just navigates to the next existing swipe.
-            const navigateClicks = (message.swipes.length - 1) - message.swipe_id;
-            if (navigateClicks > 0) {
-                debug('doSwipeMode — navigating forward', navigateClicks, 'swipe(s) to reach the last swipe');
-                for (let i = 0; i < navigateClicks; i++) {
-                    swipeRight.click();
-                    await new Promise(resolve => setTimeout(resolve, 150));
-                }
-            }
-
-            debug('doSwipeMode — clicking swipe_right to generate new swipe');
-            swipeRight.click();
+    try {
+        // Ensure swipe array exists.
+        if (!message.swipes || message.swipes.length === 0) {
+            debug('doSwipeMode — initializing swipes array for message');
+            message.swipes = [message.mes];
+            message.swipe_id = 0;
+            message.swipe_info = [{}];
         } else {
-            debug('doSwipeMode — FAILED: swipe_right button not found on message', messageIndex);
-            clearPhrasingInjection();
-            phrasingActive = false;
+            debug('doSwipeMode — existing swipes count:', message.swipes.length, '| current swipe_id:', message.swipe_id);
+        }
+
+        // Assemble and inject the prompt.
+        const assembled = assemblePrompt(seedText);
+        injectPhrasingPrompt(assembled);
+
+        // Trigger a swipe-right on the target message.
+        const messageEl = document.querySelector(`#chat .mes[mesid="${messageIndex}"]`);
+        if (messageEl) {
+            const swipeRight = messageEl.querySelector('.swipe_right');
+            if (swipeRight) {
+                // If not on the last swipe, navigate forward to it first.
+                // swipe_right only triggers generation when on the last swipe;
+                // otherwise it just navigates to the next existing swipe.
+                const navigateClicks = (message.swipes.length - 1) - message.swipe_id;
+                if (navigateClicks > 0) {
+                    debug('doSwipeMode — navigating forward', navigateClicks, 'swipe(s) to reach the last swipe');
+                    for (let i = 0; i < navigateClicks; i++) {
+                        swipeRight.click();
+                        await new Promise(resolve => setTimeout(resolve, 150));
+                    }
+                }
+
+                debug('doSwipeMode — clicking swipe_right to generate new swipe');
+                swipeRight.click();
+            } else {
+                debug('doSwipeMode — FAILED: swipe_right button not found on message', messageIndex);
+                return '';
+            }
+        } else {
+            debug('doSwipeMode — FAILED: message element not found for index', messageIndex);
             return '';
         }
-    } else {
-        debug('doSwipeMode — FAILED: message element not found for index', messageIndex);
+
+        // Wait for generation to complete.
+        debug('doSwipeMode — waiting for generation to complete');
+        const result = await waitForGenerationEnd();
+        debug('doSwipeMode — generation complete, result length:', result.length);
+        return result;
+    } finally {
         clearPhrasingInjection();
         phrasingActive = false;
-        return '';
+        debug('doSwipeMode — cleanup complete (finally block)');
     }
-
-    // Wait for generation to complete.
-    debug('doSwipeMode — waiting for generation to complete');
-    const result = await waitForGenerationEnd();
-    debug('doSwipeMode — generation complete, result length:', result.length);
-    return result;
 }
 
 /**
  * Returns a promise that resolves when the current generation ends.
  * Resolves with the last message's text (the generated swipe content).
+ * Times out after 5 minutes to prevent hanging if events don't fire.
  */
 function waitForGenerationEnd() {
     debug('waitForGenerationEnd — subscribing to GENERATION_ENDED/GENERATION_STOPPED');
     return new Promise(resolve => {
         const context = getContext();
         const { eventSource, eventTypes } = context;
+        let settled = false;
 
-        const onEnd = () => {
-            debug('waitForGenerationEnd — generation ended event received');
+        const cleanup = () => {
             eventSource.removeListener(eventTypes.GENERATION_ENDED, onEnd);
             eventSource.removeListener(eventTypes.GENERATION_STOPPED, onEnd);
+        };
+
+        const onEnd = () => {
+            if (settled) return;
+            settled = true;
+            debug('waitForGenerationEnd — generation ended event received');
+            cleanup();
             // Return the content of the currently active swipe of the last message.
             const ctx = getContext();
             const lastMsg = ctx.chat[ctx.chat.length - 1];
             debug('waitForGenerationEnd — last message length:', lastMsg ? lastMsg.mes.length : 0, '| swipe_id:', lastMsg?.swipe_id);
             resolve(lastMsg ? lastMsg.mes : '');
         };
+
+        // Safety timeout — if neither event fires within 5 minutes, resolve
+        // so the finally block in the caller can clean up the injection.
+        setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            debug('waitForGenerationEnd — TIMED OUT after 5 minutes, forcing resolve');
+            cleanup();
+            resolve('');
+        }, 5 * 60 * 1000);
 
         eventSource.on(eventTypes.GENERATION_ENDED, onEnd);
         if (eventTypes.GENERATION_STOPPED) {
