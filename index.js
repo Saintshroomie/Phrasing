@@ -235,6 +235,18 @@ async function doSwipeMode(messageIndex) {
     if (messageEl) {
         const swipeRight = messageEl.querySelector('.swipe_right');
         if (swipeRight) {
+            // If not on the last swipe, navigate forward to it first.
+            // swipe_right only triggers generation when on the last swipe;
+            // otherwise it just navigates to the next existing swipe.
+            const navigateClicks = (message.swipes.length - 1) - message.swipe_id;
+            if (navigateClicks > 0) {
+                debug('doSwipeMode — navigating forward', navigateClicks, 'swipe(s) to reach the last swipe');
+                for (let i = 0; i < navigateClicks; i++) {
+                    swipeRight.click();
+                    await new Promise(resolve => setTimeout(resolve, 150));
+                }
+            }
+
             debug('doSwipeMode — clicking swipe_right to generate new swipe');
             swipeRight.click();
         } else {
