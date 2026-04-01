@@ -248,32 +248,48 @@ async function doSwipeMode(messageIndex) {
         injectPhrasingPrompt(assembled);
 
         // Trigger a swipe-right on the target message.
-        const messageEl = document.querySelector(`#chat .mes[mesid="${messageIndex}"]`);
-        if (messageEl) {
-            const swipeRight = messageEl.querySelector('.swipe_right');
-            if (swipeRight) {
-                // If not on the last swipe, navigate forward to it first.
-                // swipe_right only triggers generation when on the last swipe;
-                // otherwise it just navigates to the next existing swipe.
-                const navigateClicks = (message.swipes.length - 1) - message.swipe_id;
-                if (navigateClicks > 0) {
-                    debug('doSwipeMode — navigating forward', navigateClicks, 'swipe(s) to reach the last swipe');
-                    for (let i = 0; i < navigateClicks; i++) {
-                        swipeRight.click();
-                        await new Promise(resolve => setTimeout(resolve, 150));
-                    }
-                }
+        // Re-query the button each time because ST may re-render the message
+        // DOM after each swipe navigation, making cached references stale.
+        const getSwipeRight = () => {
+            const el = document.querySelector(`#chat .mes[mesid="${messageIndex}"] .swipe_right`);
+            return el;
+        };
 
-                debug('doSwipeMode — clicking swipe_right to generate new swipe');
-                swipeRight.click();
+        const initialSwipeRight = getSwipeRight();
+        if (!initialSwipeRight) {
+            const messageEl = document.querySelector(`#chat .mes[mesid="${messageIndex}"]`);
+            if (!messageEl) {
+                debug('doSwipeMode — FAILED: message element not found for index', messageIndex);
             } else {
                 debug('doSwipeMode — FAILED: swipe_right button not found on message', messageIndex);
-                return '';
             }
-        } else {
-            debug('doSwipeMode — FAILED: message element not found for index', messageIndex);
             return '';
         }
+
+        // If not on the last swipe, navigate forward to it first.
+        // swipe_right only triggers generation when on the last swipe;
+        // otherwise it just navigates to the next existing swipe.
+        const navigateClicks = (message.swipes.length - 1) - message.swipe_id;
+        if (navigateClicks > 0) {
+            debug('doSwipeMode — navigating forward', navigateClicks, 'swipe(s) to reach the last swipe');
+            for (let i = 0; i < navigateClicks; i++) {
+                const navBtn = getSwipeRight();
+                if (!navBtn) {
+                    debug('doSwipeMode — FAILED: swipe_right button lost during navigation at step', i);
+                    return '';
+                }
+                navBtn.click();
+                await new Promise(resolve => setTimeout(resolve, 300));
+            }
+        }
+
+        debug('doSwipeMode — clicking swipe_right to generate new swipe');
+        const genBtn = getSwipeRight();
+        if (!genBtn) {
+            debug('doSwipeMode — FAILED: swipe_right button lost before generation click');
+            return '';
+        }
+        genBtn.click();
 
         // Wait for generation to complete.
         debug('doSwipeMode — waiting for generation to complete');
