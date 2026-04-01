@@ -7,7 +7,6 @@ import {
     extension_prompt_types,
     extension_prompt_roles,
     substituteParams,
-    addOneMessage,
 } from '../../../../script.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -146,101 +145,59 @@ function applyEnabledState() {
 }
 
 /**
- * Returns the name of a character that is actually present in the current
- * chat — needed because ST resolves the generating character from the message's
- * name field when processing swipes.
+ * Primary Flow: Injects the Phrasing! prompt containing the user's seed text,
+ * then triggers an Impersonate. The AI generates enriched prose guided by the
+ * injection, and the result lands in #send_textarea for the user to review
+ * and send.
  *
- * For solo chats this is just context.name2. For group chats we walk back
- * through the chat history to find the most recent character who spoke,
- * which is always a valid group member. Falls back to context.name2.
+ * @param {string} seedText - Speaker-attributed seed text ("Name: message").
  */
-function getActiveCharacterName() {
-    const context = getContext();
-    for (let i = context.chat.length - 1; i >= 0; i--) {
-        const msg = context.chat[i];
-        if (!msg.is_user && !msg.is_system && msg.name) {
-            debug('getActiveCharacterName — found:', msg.name, 'at index', i);
-            return msg.name;
-        }
-    }
-    debug('getActiveCharacterName — fallback to context.name2:', context.name2);
-    return context.name2;
-}
-
-
-/**
- * User Input Flow: Posts the user's seed text into the chat as a
- * character-flagged message (is_user: false) so ST renders it with swipe
- * buttons, then delegates to doSwipeMode to generate the rephrasing as a new
- * swipe. This allows successive rephrasing just like character messages.
- *
- * The message is stored with name set to the user's display name so
- * formatSeedWithSpeaker in doSwipeMode correctly attributes it.
- *
- * @param {string} rawSeedText - Raw, unformatted seed text from the textarea.
- */
-async function doUserInputFlow(rawSeedText) {
-    debug('doUserInputFlow — starting with seed length:', rawSeedText.length, '| preview:', rawSeedText.substring(0, 80));
+async function doPrimaryFlow(seedText) {
+    debug('doPrimaryFlow — starting with seed length:', seedText.length, '| preview:', seedText.substring(0, 80));
     const context = getContext();
 
     if (context.isGenerating) {
-        debug('doUserInputFlow — ABORTED: generation already in progress');
+        debug('doPrimaryFlow — ABORTED: generation already in progress');
         return '';
     }
 
-    // Build a character-flagged message object so ST renders it with swipe
-    // buttons. is_user: false is intentional — user messages don't get swipe
-    // controls in ST's DOM, which would prevent successive rephrasing.
-    //
-    // name must be a character that actually exists in the current chat —
-    // ST validates this when processing swipes and will error otherwise.
-    // We pass context.name1 as speakerOverride to doSwipeMode so the
-    // injection still correctly attributes the text to the user.
-    const charName = getActiveCharacterName();
-    const message = {
-        name: charName,
-        is_user: false,
-        is_system: false,
-        send_date: new Date().toISOString(),
-        mes: rawSeedText,
-        swipes: [rawSeedText],
-        swipe_id: 0,
-        swipe_info: [{}],
-        extra: {},
-    };
-
-    context.chat.push(message);
-    const messageIndex = context.chat.length - 1;
-    debug('doUserInputFlow — pushed message at index:', messageIndex, '| charName:', charName, '| speaker override:', context.name1);
+    phrasingActive = true;
+    debug('doPrimaryFlow — phrasingActive set to true');
 
     try {
-        // Render the new message into the DOM and persist.
-        await addOneMessage(message, { type: 'append', scroll: true });
-        await context.saveChat();
+        const assembled = assemblePrompt(seedText);
+        injectPhrasingPrompt(assembled);
 
-        // Brief settle time to ensure swipe buttons are in the DOM before
-        // doSwipeMode queries for them.
-        await new Promise(resolve => setTimeout(resolve, 100));
+        debug('doPrimaryFlow — triggering impersonate');
+        const impersonateBtn = document.getElementById('option_impersonate');
+        if (impersonateBtn) {
+            impersonateBtn.click();
+        } else {
+            debug('doPrimaryFlow — FAILED: option_impersonate button not found');
+            return '';
+        }
 
-        return await doSwipeMode(messageIndex, context.name1);
-    } catch (err) {
-        debug('doUserInputFlow — error before/during doSwipeMode:', err);
+        debug('doPrimaryFlow — waiting for generation to complete');
+        await waitForGenerationEnd();
+
+        const textarea = document.getElementById('send_textarea');
+        const result = textarea?.value?.trim() || '';
+        debug('doPrimaryFlow — generation complete, result length:', result.length);
+        return result;
+    } finally {
+        clearPhrasingInjection();
+        phrasingActive = false;
         showAllPhrasingButtons();
-        throw err;
+        debug('doPrimaryFlow — cleanup complete (finally block)');
     }
 }
 
 /**
- * Swipe-Mode Flow (§2.3): Reads the currently displayed swipe of an existing
- * message and triggers a guided swipe with the Phrasing! prompt.
+ * Swipe-Mode Flow: Reads the currently displayed swipe of an existing message
+ * and triggers a guided swipe with the Phrasing! prompt.
  * Returns the generated enriched text.
- *
- * @param {number} messageIndex
- * @param {string|null} speakerOverride - Name to use for injection attribution
- *   instead of message.name. Used by doUserInputFlow so the injection says
- *   "UserName: text" even though the message is stored under a character name.
  */
-async function doSwipeMode(messageIndex, speakerOverride = null) {
+async function doSwipeMode(messageIndex) {
     debug('doSwipeMode — starting for message index:', messageIndex);
     const context = getContext();
 
@@ -263,8 +220,8 @@ async function doSwipeMode(messageIndex, speakerOverride = null) {
         return '';
     }
 
-    const seedText = formatSeedWithSpeaker(rawSeedText, message.is_user, speakerOverride || message.name);
-    debug('doSwipeMode — seed text length:', seedText.length, '| is_user:', message.is_user, '| swipe_id:', message.swipe_id, '| speakerOverride:', speakerOverride);
+    const seedText = formatSeedWithSpeaker(rawSeedText, message.is_user, message.name);
+    debug('doSwipeMode — seed text length:', seedText.length, '| is_user:', message.is_user, '| swipe_id:', message.swipe_id);
     phrasingActive = true;
     debug('doSwipeMode — phrasingActive set to true');
 
@@ -421,7 +378,8 @@ async function onInputPhrasingClick() {
     textarea.value = '';
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
 
-    await doUserInputFlow(seedText);
+    const formattedSeed = formatSeedWithSpeaker(seedText, true);
+    await doPrimaryFlow(formattedSeed);
 }
 
 /**
@@ -693,9 +651,10 @@ function registerSlashCommand() {
             const rawSeedText = unnamedArgs?.trim();
 
             if (rawSeedText) {
-                // With argument → post as character-flagged message and rephrase via swipe.
-                debug('slashCommand /phrasing — using User Input Flow with seed length:', rawSeedText.length);
-                return await doUserInputFlow(rawSeedText);
+                // With argument → Primary Flow (impersonate into textarea).
+                const seedText = formatSeedWithSpeaker(rawSeedText, true);
+                debug('slashCommand /phrasing — using Primary Flow with seed length:', seedText.length);
+                return await doPrimaryFlow(seedText);
             } else {
                 // Without argument → Swipe-Mode on last message.
                 const context = getContext();
