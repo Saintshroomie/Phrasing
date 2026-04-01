@@ -213,15 +213,21 @@ async function doUserInputFlow(rawSeedText) {
     const messageIndex = context.chat.length - 1;
     debug('doUserInputFlow — pushed message at index:', messageIndex, '| charName:', charName, '| speaker override:', context.name1);
 
-    // Render the new message into the DOM and persist.
-    await addOneMessage(message, { type: 'append', scroll: true });
-    await context.saveChat();
+    try {
+        // Render the new message into the DOM and persist.
+        await addOneMessage(message, { type: 'append', scroll: true });
+        await context.saveChat();
 
-    // Brief settle time to ensure swipe buttons are in the DOM before
-    // doSwipeMode queries for them.
-    await new Promise(resolve => setTimeout(resolve, 100));
+        // Brief settle time to ensure swipe buttons are in the DOM before
+        // doSwipeMode queries for them.
+        await new Promise(resolve => setTimeout(resolve, 100));
 
-    return await doSwipeMode(messageIndex, context.name1);
+        return await doSwipeMode(messageIndex, context.name1);
+    } catch (err) {
+        debug('doUserInputFlow — error before/during doSwipeMode:', err);
+        showAllPhrasingButtons();
+        throw err;
+    }
 }
 
 /**
@@ -327,6 +333,7 @@ async function doSwipeMode(messageIndex, speakerOverride = null) {
     } finally {
         clearPhrasingInjection();
         phrasingActive = false;
+        showAllPhrasingButtons();
         debug('doSwipeMode — cleanup complete (finally block)');
     }
 }
