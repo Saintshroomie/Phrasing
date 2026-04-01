@@ -7,6 +7,7 @@ import {
     extension_prompt_types,
     extension_prompt_roles,
     substituteParams,
+    addOneMessage,
 } from '../../../../script.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -147,56 +148,53 @@ function applyEnabledState() {
 // ── Core Flows ─────────────────────────────────────────────────────────────────
 
 /**
- * Primary Flow (§2.1): Injects the Phrasing! prompt containing the user's
- * seed text, then triggers an Impersonate. The AI generates enriched prose
- * guided by the injection, and the result lands in #send_textarea for the
- * user to review and send.
- * Returns the generated enriched text.
+ * User Input Flow: Posts the user's seed text into the chat as a
+ * character-flagged message (is_user: false) so ST renders it with swipe
+ * buttons, then delegates to doSwipeMode to generate the rephrasing as a new
+ * swipe. This allows successive rephrasing just like character messages.
+ *
+ * The message is stored with name set to the user's display name so
+ * formatSeedWithSpeaker in doSwipeMode correctly attributes it.
+ *
+ * @param {string} rawSeedText - Raw, unformatted seed text from the textarea.
  */
-async function doPrimaryFlow(seedText) {
-    debug('doPrimaryFlow — starting with seed length:', seedText.length, '| preview:', seedText.substring(0, 80));
+async function doUserInputFlow(rawSeedText) {
+    debug('doUserInputFlow — starting with seed length:', rawSeedText.length, '| preview:', rawSeedText.substring(0, 80));
     const context = getContext();
 
     if (context.isGenerating) {
-        debug('doPrimaryFlow — ABORTED: generation already in progress');
+        debug('doUserInputFlow — ABORTED: generation already in progress');
         return '';
     }
 
-    phrasingActive = true;
-    debug('doPrimaryFlow — phrasingActive set to true');
+    // Build a character-flagged message object so ST renders it with swipe
+    // buttons. is_user: false is intentional — user messages don't get swipe
+    // controls in ST's DOM, which would prevent successive rephrasing.
+    const message = {
+        name: context.name1,
+        is_user: false,
+        is_system: false,
+        send_date: new Date().toISOString(),
+        mes: rawSeedText,
+        swipes: [rawSeedText],
+        swipe_id: 0,
+        swipe_info: [{}],
+        extra: {},
+    };
 
-    try {
-        // 1. Assemble and inject the prompt so the AI sees the rewriting
-        //    instruction during the impersonate generation.
-        const assembled = assemblePrompt(seedText);
-        injectPhrasingPrompt(assembled);
+    context.chat.push(message);
+    const messageIndex = context.chat.length - 1;
+    debug('doUserInputFlow — pushed message at index:', messageIndex, '| name:', message.name);
 
-        // 2. Trigger an impersonate. The injected prompt guides the AI to
-        //    rewrite the seed text as enriched prose. The result lands in
-        //    #send_textarea for the user to review before sending.
-        debug('doPrimaryFlow — triggering impersonate');
-        const impersonateBtn = document.getElementById('option_impersonate');
-        if (impersonateBtn) {
-            impersonateBtn.click();
-        } else {
-            debug('doPrimaryFlow — FAILED: option_impersonate button not found');
-            return '';
-        }
+    // Render the new message into the DOM and persist.
+    await addOneMessage(message, { type: 'append', scroll: true });
+    await context.saveChat();
 
-        // 3. Wait for generation to complete.
-        debug('doPrimaryFlow — waiting for generation to complete');
-        await waitForGenerationEnd();
+    // Brief settle time to ensure swipe buttons are in the DOM before
+    // doSwipeMode queries for them.
+    await new Promise(resolve => setTimeout(resolve, 100));
 
-        // 4. Read the result from the textarea.
-        const textarea = document.getElementById('send_textarea');
-        const result = textarea?.value?.trim() || '';
-        debug('doPrimaryFlow — generation complete, result length:', result.length);
-        return result;
-    } finally {
-        clearPhrasingInjection();
-        phrasingActive = false;
-        debug('doPrimaryFlow — cleanup complete (finally block)');
-    }
+    return await doSwipeMode(messageIndex);
 }
 
 /**
@@ -384,8 +382,7 @@ async function onInputPhrasingClick() {
     textarea.value = '';
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
 
-    const formattedSeed = formatSeedWithSpeaker(seedText, true);
-    await doPrimaryFlow(formattedSeed);
+    await doUserInputFlow(seedText);
 }
 
 /**
@@ -657,10 +654,9 @@ function registerSlashCommand() {
             const rawSeedText = unnamedArgs?.trim();
 
             if (rawSeedText) {
-                // With argument → Primary Flow (user-authored text).
-                const seedText = formatSeedWithSpeaker(rawSeedText, true);
-                debug('slashCommand /phrasing — using Primary Flow with seed length:', seedText.length);
-                return await doPrimaryFlow(seedText);
+                // With argument → post as character-flagged message and rephrase via swipe.
+                debug('slashCommand /phrasing — using User Input Flow with seed length:', rawSeedText.length);
+                return await doUserInputFlow(rawSeedText);
             } else {
                 // Without argument → Swipe-Mode on last message.
                 const context = getContext();
