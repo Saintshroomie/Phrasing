@@ -58,6 +58,27 @@ function getActivePrompt() {
 }
 
 /**
+ * Formats the seed text with the speaker's name prefix.
+ * @param {string} seedText - The raw message text.
+ * @param {boolean} isUser - Whether the speaker is the user.
+ * @param {string} [speakerName] - Explicit speaker name (for group chats). Falls back to {{user}}/{{char}}.
+ * @returns {string} Formatted as "Name: message".
+ */
+function formatSeedWithSpeaker(seedText, isUser, speakerName) {
+    const context = getContext();
+    let name;
+    if (speakerName) {
+        name = speakerName;
+    } else if (isUser) {
+        name = context.name1; // User name
+    } else {
+        name = context.name2; // Character name
+    }
+    debug('formatSeedWithSpeaker — speaker:', name, '| isUser:', isUser);
+    return `${name}: ${seedText}`;
+}
+
+/**
  * Assembles the final prompt by replacing {{phrasingSeed}} and resolving ST macros.
  */
 function assemblePrompt(seedText) {
@@ -199,13 +220,14 @@ async function doSwipeMode(messageIndex) {
     }
 
     // Read the currently displayed swipe content as seed text.
-    const seedText = message.mes;
-    if (!seedText || !seedText.trim()) {
+    const rawSeedText = message.mes;
+    if (!rawSeedText || !rawSeedText.trim()) {
         debug('doSwipeMode — ABORTED: message is empty');
         toast('Cannot rephrase an empty message.', 'warning');
         return '';
     }
 
+    const seedText = formatSeedWithSpeaker(rawSeedText, message.is_user, message.name);
     debug('doSwipeMode — seed text length:', seedText.length, '| is_user:', message.is_user, '| swipe_id:', message.swipe_id);
     phrasingActive = true;
     debug('doSwipeMode — phrasingActive set to true');
@@ -348,7 +370,8 @@ async function onInputPhrasingClick() {
     textarea.value = '';
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
 
-    await doPrimaryFlow(seedText);
+    const formattedSeed = formatSeedWithSpeaker(seedText, true);
+    await doPrimaryFlow(formattedSeed);
 }
 
 /**
@@ -617,10 +640,11 @@ function registerSlashCommand() {
                 return '';
             }
 
-            const seedText = unnamedArgs?.trim();
+            const rawSeedText = unnamedArgs?.trim();
 
-            if (seedText) {
-                // With argument → Primary Flow.
+            if (rawSeedText) {
+                // With argument → Primary Flow (user-authored text).
+                const seedText = formatSeedWithSpeaker(rawSeedText, true);
                 debug('slashCommand /phrasing — using Primary Flow with seed length:', seedText.length);
                 return await doPrimaryFlow(seedText);
             } else {
